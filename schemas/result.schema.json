@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OpenAgent result.json",
+  "description": "The machine-readable summary of a completed run (spec §35).",
+  "type": "object",
+  "required": ["run_id", "status", "agent", "summary", "files_changed", "tests"],
+  "properties": {
+    "run_id": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["completed", "failed", "cancelled", "orphaned"]
+    },
+    "agent": { "type": "string" },
+    "summary": { "type": "string" },
+    "files_changed": { "type": "array", "items": { "type": "string" } },
+    "tests": {
+      "type": "object",
+      "properties": {
+        "ran": { "type": "boolean" },
+        "passed": { "type": ["boolean", "null"] },
+        "exit_code": { "type": ["integer", "null"] },
+        "command": { "type": "string" }
+      }
+    },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "input_tokens": { "type": ["integer", "null"] },
+        "cached_input_tokens": { "type": ["integer", "null"] },
+        "output_tokens": { "type": ["integer", "null"] }
+      }
+    },
+    "session_id": { "type": ["string", "null"] }
+  }
+}
