@@ -51,7 +51,7 @@ def _replace(match: re.Match[str]) -> str:
 def redact_mapping(data: dict[str, Any]) -> dict[str, Any]:
     """Recursively redact string values inside a JSON-serializable mapping."""
 
-    return _walk(data)  # type: ignore[return-value]
+    return _walk(data)
 
 
 def _walk(value: Any) -> Any:

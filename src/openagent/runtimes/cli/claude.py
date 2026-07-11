@@ -69,7 +69,7 @@ class ClaudeAdapter:
     def _build_args(self, request: CliRunRequest, prompt: str | None = None) -> list[str]:
         profile = get_profile(request.permission_profile)
         args = [
-            self.executable, "-p", prompt if prompt is not None else request.prompt,
+            self.executable or "claude", "-p", prompt if prompt is not None else request.prompt,
             "--output-format", "stream-json", "--verbose", "--include-partial-messages",
         ]
         if profile.claude_allowed_tools:

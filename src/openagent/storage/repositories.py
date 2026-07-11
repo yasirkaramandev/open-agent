@@ -6,6 +6,8 @@ read, keeping indexed columns in sync for querying.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, insert, select
 
@@ -53,7 +55,7 @@ class ProviderRepository:
             ).first()
         return ProviderConnection.model_validate(row[0]) if row else None
 
-    def list(self) -> list[ProviderConnection]:
+    def list(self) -> Sequence[ProviderConnection]:
         with self.db.engine.connect() as conn:
             rows = conn.execute(select(t.provider_connections.c.data).order_by(t.provider_connections.c.name)).all()
         return [ProviderConnection.model_validate(r[0]) for r in rows]
@@ -117,7 +119,7 @@ class AgentRepository:
             row = conn.execute(select(t.agents.c.data).where(t.agents.c.name == name)).first()
         return AgentProfile.model_validate(row[0]) if row else None
 
-    def list(self) -> list[AgentProfile]:
+    def list(self) -> Sequence[AgentProfile]:
         with self.db.engine.connect() as conn:
             rows = conn.execute(select(t.agents.c.data).order_by(t.agents.c.name)).all()
         return [AgentProfile.model_validate(r[0]) for r in rows]
@@ -149,7 +151,7 @@ class CliRepository:
             row = conn.execute(select(t.cli_installations.c.data).where(t.cli_installations.c.id == cli_id)).first()
         return CliInstallation.model_validate(row[0]) if row else None
 
-    def list(self) -> list[CliInstallation]:
+    def list(self) -> Sequence[CliInstallation]:
         with self.db.engine.connect() as conn:
             rows = conn.execute(select(t.cli_installations.c.data).order_by(t.cli_installations.c.id)).all()
         return [CliInstallation.model_validate(r[0]) for r in rows]
@@ -187,14 +189,14 @@ class RunRepository:
             row = conn.execute(select(t.runs.c.data).where(t.runs.c.id == run_id)).first()
         return Run.model_validate(row[0]) if row else None
 
-    def list(self, limit: int = 50) -> list[Run]:
+    def list(self, limit: int = 50) -> Sequence[Run]:
         with self.db.engine.connect() as conn:
             rows = conn.execute(
                 select(t.runs.c.data).order_by(t.runs.c.started_at.desc()).limit(limit)
             ).all()
         return [Run.model_validate(r[0]) for r in rows]
 
-    def list_active(self) -> list[Run]:
+    def list_active(self) -> Sequence[Run]:
         active = ("queued", "starting", "running", "waiting_approval")
         with self.db.engine.connect() as conn:
             rows = conn.execute(select(t.runs.c.data).where(t.runs.c.status.in_(active))).all()
@@ -238,7 +240,7 @@ class EventIndexRepository:
             row = conn.execute(
                 select(func.max(t.events.c.seq)).where(t.events.c.run_id == run_id)
             ).first()
-        return (row[0] or 0) + 1
+        return ((row[0] if row else 0) or 0) + 1
 
     def add(self, event_id: str, run_id: str, seq: int, type_: str, timestamp: str, source: str) -> None:
         with self.db.engine.begin() as conn:

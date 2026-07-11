@@ -8,10 +8,10 @@ diff/tests, write the standard artifact bundle, and set the final status.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..core.events import EventType, NormalizedEvent
 from ..core.models import AgentProfile, Run, RunStatus, RuntimeType
@@ -75,7 +75,7 @@ class RunService:
     def get(self, run_id: str) -> Run | None:
         return self.repos.runs.get(run_id)
 
-    def list(self, limit: int = 50) -> list[Run]:
+    def list(self, limit: int = 50) -> Sequence[Run]:
         return self.repos.runs.list(limit)
 
     # ------------------------------------------------------------------ execution
@@ -105,7 +105,7 @@ class RunService:
         if workspace.lower_safety:
             art.warnings.append("Ran in a non-git copy (lower safety): changes are not versioned.")
 
-        state = {"terminal": None}  # RunStatus | None
+        state: dict[str, Any] = {"terminal": None}  # RunStatus | None
 
         def sink(event: NormalizedEvent) -> None:
             saved = event_log.append(event)
@@ -212,7 +212,7 @@ class RunService:
 
         run_dir = self.paths.run_dir(run.id)
         event_log = EventLog(run_dir, index=self.repos.event_index)
-        state = {"terminal": None}
+        state: dict[str, Any] = {"terminal": None}
         art = RunArtifacts()
 
         def sink(event: NormalizedEvent) -> None:
@@ -249,7 +249,7 @@ class RunService:
 
     # ------------------------------------------------------------------ maintenance
 
-    def recover_orphans(self) -> list[str]:
+    def recover_orphans(self) -> Sequence[str]:
         """Mark active runs whose process is gone as orphaned (spec §45)."""
 
         recovered: list[str] = []

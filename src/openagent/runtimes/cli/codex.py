@@ -65,7 +65,7 @@ class CodexAdapter:
     ) -> AsyncIterator[NormalizedEvent]:
         sandbox = get_profile(request.permission_profile).codex_sandbox
         args = [
-            self.executable, "exec", "resume", session_id,
+            self.executable or "codex", "exec", "resume", session_id,
             "--json", "--sandbox", sandbox, prompt,
         ]
         return self._drive(request, args)
@@ -74,7 +74,7 @@ class CodexAdapter:
         sandbox = get_profile(request.permission_profile).codex_sandbox
         final = str(request.workspace / ".codex-final.txt")
         return [
-            self.executable, "exec", "--json", "--sandbox", sandbox,
+            self.executable or "codex", "exec", "--json", "--sandbox", sandbox,
             "-o", final, request.prompt,
         ]
 

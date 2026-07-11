@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from ..core.models import CredentialRef, CredentialType, Protocol, ProviderConnection, RemoteModel
@@ -66,7 +67,7 @@ class ProviderService:
         self.repos.providers.upsert(provider)
         return provider
 
-    def list(self) -> list[ProviderConnection]:
+    def list(self) -> Sequence[ProviderConnection]:
         return self.repos.providers.list()
 
     def get(self, name: str) -> ProviderConnection | None:
@@ -99,7 +100,7 @@ class ProviderService:
         finally:
             await _maybe_close(adapter)
 
-    async def remote_models(self, name: str) -> list[RemoteModel]:
+    async def remote_models(self, name: str) -> Sequence[RemoteModel]:
         provider = self.get(name)
         if not provider:
             return []

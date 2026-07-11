@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from ..core.models import AgentProfile, AgentRuntime, RuntimeType
@@ -52,7 +53,7 @@ class AgentService:
         self.sync_openagent_md()
         return agent
 
-    def list(self) -> list[AgentProfile]:
+    def list(self) -> Sequence[AgentProfile]:
         return self.repos.agents.list()
 
     def get(self, name: str) -> AgentProfile | None:

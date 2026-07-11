@@ -103,10 +103,17 @@ class Transport:
                             status=response.status_code,
                         )
                     async for line in response.aiter_lines():
-                        obj = _parse_sse_line(line)
-                        if obj is _DONE:
+                        stripped = line.strip()
+                        if not stripped or stripped.startswith(":") or not stripped.startswith("data:"):
+                            continue
+                        payload_str = stripped[len("data:"):].strip()
+                        if payload_str == "[DONE]":
                             return
-                        if obj is not None:
+                        try:
+                            obj = json.loads(payload_str)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(obj, dict):
                             yield obj
                     return
             except (httpx.TimeoutException, httpx.TransportError) as exc:
@@ -127,24 +134,6 @@ class Transport:
     async def _sleep(self, attempt: int, retry_after: float | None) -> None:
         delay = retry_after if retry_after is not None else self.backoff_base * (2**attempt)
         await asyncio.sleep(delay)
-
-
-_DONE = object()
-
-
-def _parse_sse_line(line: str) -> dict[str, Any] | object | None:
-    line = line.strip()
-    if not line or line.startswith(":"):
-        return None
-    if line.startswith("data:"):
-        data = line[len("data:") :].strip()
-        if data == "[DONE]":
-            return _DONE
-        try:
-            return json.loads(data)
-        except json.JSONDecodeError:
-            return None
-    return None
 
 
 def _retry_after(response: httpx.Response) -> float | None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from ..core.models import CliInstallation
@@ -28,10 +29,10 @@ class DiscoveryService:
                 self.repos.clis.upsert(install)
         return augmented
 
-    def list(self) -> list[CliInstallation]:
+    def list(self) -> Sequence[CliInstallation]:
         return self.repos.clis.list()
 
-    def known_types(self) -> list[str]:
+    def known_types(self) -> Sequence[str]:
         return known_cli_types()
 
     async def _augment_auth(self, install: CliInstallation) -> CliInstallation:

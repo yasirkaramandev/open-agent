@@ -6,6 +6,7 @@ between two markers so regeneration never disturbs hand-written prose around it.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from ..config import OPENAGENT_MD_END, OPENAGENT_MD_START
@@ -30,7 +31,7 @@ This repository uses OpenAgent to discover and run external AI agents.
 """
 
 
-def render_agents_block(agents: list[AgentProfile]) -> str:
+def render_agents_block(agents: Sequence[AgentProfile]) -> str:
     if not agents:
         body = "\n_No agents registered yet. Add one with `openagent add`._\n"
     else:
@@ -49,11 +50,11 @@ def render_agents_block(agents: list[AgentProfile]) -> str:
     return f"{OPENAGENT_MD_START}\n{body}\n{OPENAGENT_MD_END}\n"
 
 
-def render_document(agents: list[AgentProfile]) -> str:
+def render_document(agents: Sequence[AgentProfile]) -> str:
     return f"{_HEADER}\n{render_agents_block(agents)}"
 
 
-def write_openagent_md(path: Path, agents: list[AgentProfile]) -> None:
+def write_openagent_md(path: Path, agents: Sequence[AgentProfile]) -> None:
     """Create or update ``OPENAGENT.md`` in place, preserving prose outside the markers."""
 
     block = render_agents_block(agents)

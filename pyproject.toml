@@ -67,6 +67,10 @@ src = ["src", "tests"]
 select = ["E", "F", "I", "UP", "B", "W", "C4"]
 ignore = ["E501"]
 
+[tool.ruff.lint.per-file-ignores]
+# Typer's API intentionally uses function calls (typer.Option/Argument) as argument defaults.
+"src/openagent/cli/app.py" = ["B008"]
+
 [tool.mypy]
 python_version = "3.10"
 packages = ["openagent"]
