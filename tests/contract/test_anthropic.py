@@ -2,6 +2,7 @@
 
 import json
 
+import pytest
 from pytest_httpx import HTTPXMock
 
 from openagent.core.events import ToolCall
@@ -68,6 +69,40 @@ async def test_auth_error(httpx_mock: HTTPXMock):
     result = await collect(make_adapter().stream_response(req()))
     assert result.is_error
     assert result.error_type == "authentication_failed"
+
+
+# --------------------------------------------------------------------------- health (item 10)
+
+@pytest.mark.parametrize(
+    ("status", "ok", "needle"),
+    [
+        (401, False, "authentication failed"),
+        (403, False, "permission denied"),
+        (402, False, "insufficient balance"),
+        (503, False, "overloaded"),
+        (400, False, "invalid configuration"),
+        (429, True, "rate limited"),
+        (404, True, "probe model not available"),
+    ],
+)
+async def test_connection_classifies_errors(httpx_mock: HTTPXMock, status, ok, needle):
+    httpx_mock.add_response(status_code=status, json={"error": {"message": "x"}})
+    adapter = make_adapter()
+    adapter.transport.max_retries = 0  # don't retry retryable statuses in the test
+    result = await adapter.test_connection()
+    assert result.ok is ok
+    assert needle in result.detail
+
+
+async def test_connection_reachable_on_success(httpx_mock: HTTPXMock):
+    httpx_mock.add_response(json={
+        "id": "msg_1", "type": "message", "role": "assistant",
+        "content": [{"type": "text", "text": "ok"}],
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    })
+    result = await make_adapter().test_connection()
+    assert result.ok is True
+    assert result.detail == "reachable"
 
 
 def test_minimax_raw_blocks_preserved():

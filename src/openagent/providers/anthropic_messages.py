@@ -61,11 +61,10 @@ class AnthropicMessagesAdapter:
         try:
             result = await collect(self.stream_response(request))
         except TransportError as exc:
-            return HealthResult(ok=False, detail=exc.message)
-        if result.is_error and result.error_type == ErrorType.AUTHENTICATION_FAILED.value:
-            return HealthResult(ok=False, detail="authentication failed")
-        # A model-not-found / invalid-request means creds are fine but "probe" isn't a real model.
-        return HealthResult(ok=True, detail="reachable")
+            return _classify_health(exc.error_type.value, exc.message)
+        if not result.is_error:
+            return HealthResult(ok=True, detail="reachable")
+        return _classify_health(result.error_type, result.error_message)
 
     async def list_models(self) -> list[RemoteModel]:
         try:
@@ -241,3 +240,29 @@ def _loads(raw: str) -> dict[str, Any]:
         return parsed if isinstance(parsed, dict) else {"value": parsed}
     except json.JSONDecodeError:
         return {}
+
+
+def _classify_health(error_type: str | None, message: str | None) -> HealthResult:
+    """Turn a probe error into a precise connection-health verdict (item 10).
+
+    Distinguishes the failure modes instead of returning ``reachable`` for everything. A
+    model-not-found on the throwaway probe model means the credentials work — the connection is
+    healthy, the probe model just is not that account's model. A rate limit likewise proves the
+    endpoint is reachable and authenticated (only throttled right now).
+    """
+
+    detail = (message or "").strip()
+    if error_type == ErrorType.MODEL_NOT_FOUND.value:
+        return HealthResult(ok=True, detail="reachable (probe model not available)")
+    if error_type == ErrorType.PROVIDER_RATE_LIMITED.value:
+        return HealthResult(ok=True, detail="reachable but rate limited")
+    mapping = {
+        ErrorType.AUTHENTICATION_FAILED.value: "authentication failed",
+        ErrorType.PERMISSION_DENIED.value: "permission denied",
+        ErrorType.INSUFFICIENT_BALANCE.value: "insufficient balance",
+        ErrorType.PROVIDER_OVERLOADED.value: "provider overloaded/unavailable",
+        ErrorType.INVALID_REQUEST.value: "invalid configuration",
+    }
+    if error_type in mapping:
+        return HealthResult(ok=False, detail=mapping[error_type])
+    return HealthResult(ok=False, detail=detail or "unreachable")
