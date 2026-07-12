@@ -105,13 +105,34 @@ class ArtifactWriter:
         self._text("output.md", redact(_render_output_md(run, art)))
         self._text("handoff.md", redact(_render_handoff_md(run, art)))
 
-    def write_turn(self, run: Run, prompt: str, art: RunArtifacts) -> None:
-        """Record a resume turn's outcome as an explicit ``turn_NNN.md`` artifact (spec §32)."""
+    def write_turn(
+        self, run: Run, prompt: str, art: RunArtifacts,
+        event_range: tuple[int, int] | None = None,
+    ) -> None:
+        """Record a resume turn as an explicit ``turn_NNN.md`` artifact (spec §32, item 18).
+
+        Scoped to THIS turn only: its prompt, summary, usage, tests, and the range of events it
+        produced. The cumulative view of the whole run lives in ``result.json``.
+        """
 
         status = run.status if isinstance(run.status, str) else run.status.value
+        usage = art.usage or {}
+        usage_line = (
+            f"in {usage.get('input_tokens', 0)} / cached {usage.get('cached_input_tokens', 0)} / "
+            f"out {usage.get('output_tokens', 0)}"
+        )
+        tests = art.tests
+        tests_line = (
+            f"ran `{tests.command}` → {'passed' if tests.passed else 'failed'} "
+            f"(exit {tests.exit_code})" if tests.ran else "no tests run this turn"
+        )
+        events_line = (
+            f"events {event_range[0]}–{event_range[1]}" if event_range else "(range unavailable)"
+        )
         lines = [
             f"# Turn {run.turns} — {run.id}", "",
-            f"- Status: {status}", "",
+            f"- Status: {status}", f"- Usage: {usage_line}", f"- Tests: {tests_line}",
+            f"- Events: {events_line}", "",
             "## Prompt", "", redact(prompt), "",
             "## Summary", "", redact(art.summary) or "(no summary)", "",
         ]

@@ -164,8 +164,10 @@ class RunService:
         final = self._resolve_final(run, state)
         run.status = final
         run.completed_at = _now()
-        if not art.summary and final is RunStatus.COMPLETED:
-            art.summary = "Run completed."
+        if final is RunStatus.COMPLETED:
+            run.failure_type = None  # a completed run carries no failure type (item 18)
+            if not art.summary:
+                art.summary = "Run completed."
         self.repos.runs.upsert(run)
 
         # Emit our own terminal event only if the runtime didn't already.
@@ -266,6 +268,10 @@ class RunService:
         run_dir = self.paths.run_dir(run.id)
         event_log = EventLog(run_dir, index=self.repos.event_index)
         turn_state: dict[str, Any] = {"terminal": None}
+        # Per-turn artifacts (item 18): captured live so turn_NNN.md holds only THIS turn's summary,
+        # usage, and tests — the cumulative view is rebuilt separately for result.json.
+        turn_art = RunArtifacts()
+        event_start = sum(1 for _ in event_log.read()) + 1  # 1-based index of this turn's first event
 
         # Mark the run active again while resuming; append (never truncate) the event log.
         run.status = RunStatus.RUNNING
@@ -275,7 +281,7 @@ class RunService:
 
         def sink(event: NormalizedEvent) -> None:
             saved = event_log.append(event)
-            _capture(saved, run=run, art=None, state=turn_state)
+            _capture(saved, run=run, art=turn_art, state=turn_state)
             self._persist_progress(saved, run)
             if on_event is not None:
                 on_event(saved)
@@ -300,10 +306,14 @@ class RunService:
         finally:
             self._cli_adapters.pop(run.id, None)
 
-        self._finalize_resume(run, prompt, turn_state)
+        event_end = sum(1 for _ in event_log.read())
+        self._finalize_resume(run, prompt, turn_state, turn_art, (event_start, event_end))
         return run
 
-    def _finalize_resume(self, run: Run, prompt: str, turn_state: dict) -> None:
+    def _finalize_resume(
+        self, run: Run, prompt: str, turn_state: dict, turn_art: RunArtifacts,
+        event_range: tuple[int, int],
+    ) -> None:
         """Rebuild cumulative artifacts from the full event log after a resume turn (spec §32)."""
 
         # Cumulative artifacts: replay the whole event log so earlier turns' work is preserved even
@@ -325,11 +335,14 @@ class RunService:
             final = turn_state["terminal"]
         run.status = final
         run.completed_at = _now()
+        if final is RunStatus.COMPLETED:
+            run.failure_type = None  # a successful new turn clears a prior turn's failure (item 18)
         self.repos.runs.upsert(run)
 
         run_dir = self.paths.run_dir(run.id)
         writer = ArtifactWriter(run_dir)
-        writer.write_turn(run, prompt, art)
+        # turn_NNN.md is scoped to this turn only; result.json is cumulative for the whole run.
+        writer.write_turn(run, prompt, turn_art, event_range)
         writer.write_status(run)
         writer.write_results(run, art)
 
@@ -339,8 +352,18 @@ class RunService:
         art = RunArtifacts()
         state: dict[str, Any] = {"terminal": None}
         event_log = EventLog(self.paths.run_dir(run.id))
+        usage_total = {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0}
+        saw_usage = False
         for event in event_log.read():
             _capture(event, art, run, state)
+            etype = event.type if isinstance(event.type, str) else event.type.value
+            if etype == EventType.USAGE_UPDATED.value:
+                saw_usage = True
+                for key in usage_total:
+                    usage_total[key] += int(event.data.get(key) or 0)
+        # Cumulative usage across every turn (item 18) — overrides _capture's last-turn-only value.
+        if saw_usage:
+            art.usage = usage_total
         return art, state
 
     def _reconstruct_workspace(self, run: Run):

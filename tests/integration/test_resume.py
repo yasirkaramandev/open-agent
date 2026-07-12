@@ -87,6 +87,45 @@ async def test_failed_resume_preserves_earlier_artifacts(app: OpenAgentApp, tmp_
     assert "did the thing" in result_json["summary"]
 
 
+async def test_resume_accumulates_usage_and_scopes_turn_artifacts(app: OpenAgentApp, use_fake):
+    run = app.runs.create(agent_name="fake-coder", prompt="first", worktree="auto")
+    await app.runs.execute(run)
+    result1 = json.loads(app.runs.output(run.id, "json"))
+    turn1_in = result1["usage"]["input_tokens"]
+
+    await app.runs.resume(run.id, "second")
+    result2 = json.loads(app.runs.output(run.id, "json"))
+
+    # Cumulative usage sums both turns (10 in turn 1 + 3 in turn 2 from the fake script).
+    assert result2["usage"]["input_tokens"] == turn1_in + 3
+    assert result2["usage"]["output_tokens"] == 5 + 2
+
+    # turn_002.md is scoped to just the second turn's usage, not the cumulative total.
+    turn2_md = (app.paths.run_dir(run.id) / "turn_002.md").read_text()
+    assert "in 3 /" in turn2_md
+    assert "## Prompt" in turn2_md and "second" in turn2_md
+    assert "Events:" in turn2_md
+
+
+async def test_successful_resume_clears_prior_failure_type(
+    app: OpenAgentApp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # First turn fails (but records a session), leaving a failure_type; a successful resume clears it.
+    adapter = FakeCliAdapter(write_fake_script(tmp_path), mode="usage_limit", resume_mode="resume")
+    monkeypatch.setattr("openagent.services.run_service.build_cli_adapter",
+                        lambda cli, executable=None: adapter)
+    run = app.runs.create(agent_name="fake-coder", prompt="fail first", worktree="auto")
+    failed = await app.runs.execute(run)
+    assert failed.status == RunStatus.FAILED
+    assert failed.failure_type is not None
+
+    resumed = await app.runs.resume(run.id, "now succeed")
+    assert resumed.status == RunStatus.COMPLETED
+    assert resumed.failure_type is None
+    result = json.loads(app.runs.output(run.id, "json"))
+    assert result["status"] == "completed"
+
+
 async def test_success_event_with_nonzero_exit_makes_run_failed(
     app: OpenAgentApp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
