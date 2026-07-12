@@ -23,7 +23,10 @@ classifiers = [
     "Topic :: Software Development :: Build Tools",
 ]
 dependencies = [
-    "textual>=0.80,<9",
+    # Pinned to the tested 8.2.x line: the TUI is pilot-tested against 8.2.8 and a few tests read
+    # Select's internal option list (no public accessor exists in this line). Widen only with CI
+    # coverage on the new version. See item 12.
+    "textual>=8.2,<8.3",
     "typer>=0.12",
     "pydantic>=2.7",
     "sqlalchemy>=2.0",

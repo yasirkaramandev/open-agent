@@ -16,6 +16,7 @@ from openagent.config import Paths
 from openagent.tui.app import OpenAgentTUI
 from openagent.tui.screens.add_agent import AddAgentScreen
 from openagent.tui.screens.lists import AgentsScreen
+from tests.tui_helpers import select_option_labels
 
 
 def _app(tmp_path: Path) -> OpenAgentApp:
@@ -63,7 +64,7 @@ async def test_cli_fields_appear_only_for_cli_runtime(tmp_path: Path):
         assert screen.query_one("#api-group").display is False
         # The CLI select is present and offers the known CLIs with an install status label.
         cli_select = screen.query_one("#cli", Select)
-        labels = [opt[0] for opt in cli_select._options]  # type: ignore[attr-defined]
+        labels = select_option_labels(cli_select)
         assert any("codex" in label for label in labels)
         assert any("claude" in label for label in labels)
 

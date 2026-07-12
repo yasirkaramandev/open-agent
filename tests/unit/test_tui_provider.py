@@ -11,6 +11,7 @@ from openagent.config import Paths
 from openagent.tui.app import OpenAgentTUI
 from openagent.tui.screens.add_agent import AddAgentScreen
 from openagent.tui.screens.add_provider import AddProviderScreen
+from tests.tui_helpers import select_option_values
 
 
 def _app(tmp_path: Path) -> OpenAgentApp:
@@ -68,8 +69,7 @@ async def test_save_provider_then_available_in_add_agent(tmp_path: Path):
         await pilot.pause()
         add = pilot.app.screen
         assert isinstance(add, AddAgentScreen)
-        provider_values = [opt[1] for opt in add.query_one("#provider", Select)._options  # type: ignore[attr-defined]
-                           if opt[1] is not None]
+        provider_values = select_option_values(add.query_one("#provider", Select))
         assert "local-llm" in provider_values
 
 

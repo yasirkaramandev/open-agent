@@ -17,6 +17,7 @@ from openagent.config import Paths
 from openagent.tui.app import OpenAgentTUI
 from openagent.tui.screens.add_agent import AddAgentScreen
 from openagent.tui.screens.lists import AgentsScreen
+from tests.tui_helpers import select_all_option_values
 
 
 def _app(tmp_path: Path, *, with_provider: bool = False) -> OpenAgentApp:
@@ -44,7 +45,7 @@ async def _pick(pilot, select: Select, value: str) -> None:
     The overlay highlights the *currently selected* option, so navigate by the delta from the
     current value rather than a fixed count from the top.
     """
-    options = [v for _, v in select._options]  # type: ignore[attr-defined]
+    options = select_all_option_values(select)
     target = options.index(value)
     try:
         current = options.index(select.value)
