@@ -1,5 +1,7 @@
 # OpenAgent
 
+[![CI](https://github.com/yasirkaramandev/open-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/yasirkaramandev/open-agent/actions/workflows/ci.yml)
+
 **Local-first control plane for AI APIs, coding CLIs, and autonomous agents.**
 
 > Register every AI agent once. Run all of them through one standard interface.
@@ -24,9 +26,26 @@ isolated git worktree — that standardization is the point.
 ## Status
 
 **v0.1 (alpha).** Working core: TUI + CLI, OpenAI (Chat + Responses) / Anthropic / generic
-OpenAI-compatible API agents with a tool loop, live **Codex CLI** adapter, **Claude Code** adapter
-(fixture-validated), isolated worktrees, permission profiles, OS-keychain credentials, and the
-standard run bundle. See [ROADMAP.md](ROADMAP.md) for what's next.
+OpenAI-compatible API agents with a tool loop, CLI adapters (Codex, Claude Code), isolated
+worktrees, permission profiles, OS-keychain credentials, and the standard run bundle. See
+[ROADMAP.md](ROADMAP.md) for what's next.
+
+### Maturity — what's actually verified
+
+We try to be precise about what is proven vs. pending, so nothing here is oversold.
+
+| Area | State |
+|---|---|
+| API agents (OpenAI Chat/Responses, Anthropic, OpenAI-compatible) | Offline-tested end to end (mocked HTTP): tool loop, worktree diff, artifacts, redaction. Not yet exercised against a paid live key in CI. |
+| **Codex CLI** | Event schema validated **live** against `codex-cli 0.142.5`; the full run/cancel/terminal-state pipeline is exercised via a real-subprocess fake-CLI harness. A **successful real model turn is pending account/usage-limit availability**. |
+| **Claude Code** | **Fixture-validated** — the `stream-json` mapping and invocation are ready, but not yet run against an installed `claude` on this machine. Treat as unverified against a live CLI. |
+| TUI (dashboard, agents, providers, add/edit agent, run, approvals) | Pilot-tested (Textual) incl. creating Codex/Claude/API agents, validation, provider add, and the approval modal. |
+| Security (minimal env, command allowlist, worktree isolation, redaction, process-tree cancel) | Unit + integration tested (see `tests/`). |
+| **AGY** | **Not part of v0.1.** |
+| **Gemini** | **Not part of v0.1.** |
+
+Everything above except the live-CLI/live-API caveats runs in the **offline test suite in CI**
+(Ubuntu 3.10/3.11/3.12) with no API keys and no installed CLIs.
 
 ## Install
 
@@ -56,9 +75,15 @@ openagent provider add deepseek-main --type deepseek
 openagent add --name deepseek-coder --provider deepseek-main --model <model-id> --tag backend
 
 # Run a task in an isolated worktree, then read the result
+#   --worktree auto|none|copy   (none needs -y to confirm running in place)
+#   -y / --yes                   approve high-risk ops non-interactively (records approval events)
 openagent run --name codex-coder --prompt "update the WSS client in main.py" --worktree auto
 openagent output --id <run-id> --format md
 openagent output --id <run-id> --format diff
+
+# Continue the session with another turn; cancel a live run (terminates the process tree)
+openagent message --id <run-id> -p "now add a test"
+openagent cancel --id <run-id>
 ```
 
 ## How it works
@@ -80,9 +105,9 @@ Storage:        SQLite (index) · events.jsonl (source of truth) · artifacts
   stored once.
 * **Dynamic models.** Model IDs are never hardcoded — OpenAgent discovers them and probes
   capabilities per model.
-* **Safety first.** Every file-changing run happens in an isolated git worktree. A command policy
-  blocks pushes/publishes/credential reads; secrets are redacted from every artifact and never
-  passed as command arguments.
+* **Safety first.** Every file-changing run happens in an isolated worktree. Commands run in a
+  minimal environment (no inherited secrets) behind an executable **allowlist**; secrets are redacted
+  from every artifact — including the prompt and the diff — and never passed as command arguments.
 
 ## Permission profiles
 
@@ -96,8 +121,9 @@ Storage:        SQLite (index) · events.jsonl (source of truth) · artifacts
 ## Security
 
 See [SECURITY.md](SECURITY.md). Highlights: OS-keychain credentials, minimal subprocess
-environments, worktree isolation, a command denylist, and secret redaction across
-logs/events/reports.
+environments (no inherited secrets), worktree isolation, an executable **allowlist** with approval
+gating, process-tree cancellation with PID-identity verification, and secret redaction across every
+artifact (prompt and diff included).
 
 ## Development
 
@@ -105,7 +131,14 @@ logs/events/reports.
 .venv/bin/ruff check src tests
 .venv/bin/mypy src
 .venv/bin/python -m pytest -q
+.venv/bin/python -m build
 ```
+
+The same checks run in [GitHub Actions](.github/workflows/ci.yml) on every push and pull request:
+`ruff` + `mypy` + the full offline `pytest` suite on Ubuntu (Python 3.10 / 3.11 / 3.12), a package
+build, and a clean-venv wheel-install + entrypoint check, plus cross-platform smoke jobs on macOS and
+Windows. The offline suite requires **no API keys and no installed CLIs** — CLI runs are exercised
+with a real-subprocess fake, and providers with mocked HTTP.
 
 ## License
 

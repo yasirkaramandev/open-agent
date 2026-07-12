@@ -73,6 +73,7 @@ async def test_denied_approval_blocks_command(app: OpenAgentApp, httpx_mock: HTT
     assert (Path(run.worktree) / "target.txt").exists()
 
 
+@pytest.mark.skipif(__import__("sys").platform == "win32", reason="uses POSIX rm")
 async def test_approved_command_runs(app: OpenAgentApp, httpx_mock: HTTPXMock):
     _script(httpx_mock)
     run = app.runs.create(agent_name="a", prompt="clean up")

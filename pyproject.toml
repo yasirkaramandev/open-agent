@@ -46,6 +46,7 @@ dev = [
     "mypy>=1.10",
     "types-pyyaml",
     "types-psutil",
+    "build>=1.2",
 ]
 
 [project.scripts]

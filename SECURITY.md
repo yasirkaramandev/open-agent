@@ -14,30 +14,55 @@ guardrails it enforces, and how to report issues.
 
 ## Secret redaction
 
-Every string written to logs, events, and reports passes through a redactor that masks common secret
-shapes (`sk-…`, `Bearer …`, `Authorization: …`, `*_API_KEY=…`, GitHub tokens). Model-produced summary
-text is redacted before it is written to `output.md` / `result.json`.
+Every string written to a run artifact passes through a redactor before it hits disk — this includes
+`request.json` (**the user prompt is redacted**), `result.json`, `status.json`, `events.jsonl`,
+`logs.txt`, `output.md`, `handoff.md`, and **`changes.diff`** (a diff can easily contain a pasted
+secret). The redactor masks common secret shapes (`sk-…`, `Bearer …`, `Authorization: …`,
+`*_API_KEY=…`, GitHub tokens) and also scrubs **exact key values registered at runtime** — required
+for provider keys whose format has no recognizable prefix. Run artifacts are written with owner-only
+permissions where the platform supports it.
 
 ## Workspace isolation
 
-- File-changing runs execute in an **isolated git worktree** on a fresh `openagent/run_<id>` branch.
-  Your working tree is untouched until you choose to apply/merge.
-- Non-git projects fall back to a temporary copy, flagged as **lower safety** in the UI.
-- All tool file paths are validated to stay inside the workspace (path-traversal / symlink escapes
-  are rejected).
+Three explicit strategies (`--worktree`):
+
+- **`auto`** — a git repo runs in an **isolated git worktree** on a fresh `openagent/run_<id>` branch;
+  your working tree is untouched until you apply/merge. A non-git project falls back to an isolated
+  **copy**, flagged **lower safety**.
+- **`copy`** — always an isolated directory copy. Changed/created/deleted files and a unified diff are
+  computed by comparing the copy to the untouched source.
+- **`none`** — runs directly in your project directory; file-editing agents require **explicit
+  confirmation** (`-y`) because there is no isolation.
+
+All tool file paths are validated to stay inside the workspace (path-traversal / symlink escapes are
+rejected).
 
 ## Command policy
 
-Before any shell command runs it is screened. **Denied** categorically: `git push`, `npm publish`,
-`pip/twine upload`, `docker login`, cloud CLI logins, `sudo`, reads of `.env` / SSH keys /
-credentials, and direct keychain access. **Requires approval**: `rm -rf`, `git reset --hard`,
-`git clean`, disk-level operations, and (when the profile disallows network) installs/downloads.
+Commands run with a **minimal environment** (never the parent process's environment, so provider
+keys, `GITHUB_TOKEN`, AWS keys, `DATABASE_URL`, etc. cannot leak into a child) and with `shell=False`
+and a structured argument list. The **primary boundary is an executable allowlist**, not a regex
+denylist:
+
+- **Allowed** — only known-safe executables (language runtimes/package managers, build/test/lint
+  tools, a git subset, common read/inspect utilities).
+- **Requires approval** — any executable *not* on the allowlist, shell interpreters (`sh`, `bash`…),
+  shell-operator commands (pipes/redirects/subshells), destructive verbs (`rm -rf`, `git reset
+  --hard`, `git clean`, disk-level ops), and network use under a no-network profile.
+- **Denied** categorically — `git push`, `npm publish`, `pip/twine upload`, `docker login`, cloud CLI
+  logins, `sudo`, reads of `.env` / SSH keys / credentials, and direct keychain access.
+
+Approvals are recorded as `approval.requested` / `approval.accepted` / `approval.denied` events. A
+non-interactive run **denies** high-risk operations by default and never silently auto-approves.
 
 ## Process management
 
 CLI subprocesses run with a minimal environment. Cancelling a run terminates the **entire process
-tree** (graceful `SIGTERM` → force `SIGKILL`). If OpenAgent exits unexpectedly, orphaned runs are
-detected and marked on the next launch.
+tree** (graceful `SIGTERM` → force `SIGKILL`); the target PID's start time is verified first so a
+reused PID can never cause an unrelated process to be killed. Timeouts also terminate the whole tree.
+PIDs and session ids are persisted the moment they arrive, so a run can be cancelled or recovered
+after a restart; if OpenAgent exits unexpectedly, orphaned runs are detected and marked on the next
+launch.
 
 ## Reasoning privacy
 
