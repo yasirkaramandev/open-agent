@@ -14,6 +14,7 @@ from textual.widgets import Button, Footer, Header, Input, Label, Select, Static
 
 from ...core.permissions import profile_names
 from ...services.agent_service import AgentError
+from ..select_utils import selected_string
 
 
 class EditAgentScreen(Screen):
@@ -77,7 +78,7 @@ class EditAgentScreen(Screen):
                 description=self.query_one("#description", Input).value.strip(),
                 tags=tags,
                 system_prompt=self.query_one("#system_prompt", TextArea).text.strip(),
-                permission_profile=self.query_one("#profile", Select).value,
+                permission_profile=selected_string(self.query_one("#profile", Select)) or "safe-edit",
             )
         except AgentError as exc:
             self.query_one("#edit-error", Static).update(f"[red]{exc}[/red]")

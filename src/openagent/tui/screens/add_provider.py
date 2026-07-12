@@ -18,6 +18,7 @@ from textual.widgets import Button, Footer, Header, Input, Label, Select, Static
 
 from ...core.models import Protocol
 from ...providers.factory import PRESETS, preset_names
+from ..select_utils import selected_string
 
 _CRED_SOURCES = [
     ("OS keychain (recommended)", "keychain"),
@@ -88,19 +89,19 @@ class AddProviderScreen(Screen):
             self._sync_cred_fields()
 
     def _sync_cred_fields(self) -> None:
-        cred = self.query_one("#cred", Select).value
+        cred = selected_string(self.query_one("#cred", Select))
         self.query_one("#env-row").display = cred == "env"
         self.query_one("#key-row").display = cred == "keychain"
 
     # ------------------------------------------------------------------ field collection
 
     def _params(self) -> dict:
-        protocol_val = self.query_one("#protocol", Select).value
-        protocol = None if protocol_val == "preset" else Protocol(protocol_val)
-        cred = self.query_one("#cred", Select).value
+        protocol_val = selected_string(self.query_one("#protocol", Select))
+        protocol = None if protocol_val in (None, "preset") else Protocol(protocol_val)
+        cred = selected_string(self.query_one("#cred", Select))
         return {
             "name": self.query_one("#name", Input).value.strip(),
-            "provider_type": self.query_one("#preset", Select).value,
+            "provider_type": selected_string(self.query_one("#preset", Select)) or "custom",
             "protocol": protocol,
             "base_url": self.query_one("#base_url", Input).value.strip() or None,
             "region": self.query_one("#region", Input).value.strip() or None,

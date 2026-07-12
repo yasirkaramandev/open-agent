@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: Software Development :: Build Tools",
 ]
 dependencies = [
-    "textual>=0.80",
+    "textual>=0.80,<9",
     "typer>=0.12",
     "pydantic>=2.7",
     "sqlalchemy>=2.0",

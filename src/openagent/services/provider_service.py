@@ -130,6 +130,45 @@ class ProviderService:
         finally:
             await _maybe_close(adapter)
 
+    async def remote_models_config(
+        self,
+        *,
+        provider_type: str,
+        protocol: Protocol | None = None,
+        base_url: str | None = None,
+        anthropic_base_url: str | None = None,
+        region: str | None = None,
+        workspace_id: str | None = None,
+        api_key: str | None = None,
+        key_env: str | None = None,
+    ) -> Sequence[RemoteModel]:
+        """List models for a *would-be* provider before it is saved (Add-Agent new-connection flow).
+
+        Mirrors :meth:`test_config`: builds a transient adapter from the supplied fields, persists
+        nothing, and never stores or echoes the key. Best-effort — returns ``[]`` on any failure.
+        """
+
+        preset = get_preset(provider_type)
+        resolved_protocol = protocol or (preset.protocol if preset else Protocol.OPENAI_CHAT)
+        provider = ProviderConnection(
+            id="provider__transient", name="__transient", provider_type=provider_type,
+            protocol=resolved_protocol, base_url=base_url, anthropic_base_url=anthropic_base_url,
+            region=region, workspace_id=workspace_id, credential=CredentialRef(type=CredentialType.NONE),
+        )
+        key = api_key or (os.environ.get(key_env) if key_env else None)
+        register_secret(key)
+        try:
+            resolve_base_url(provider)
+        except ValueError:
+            return []
+        adapter = build_adapter(provider, key)
+        try:
+            return await adapter.list_models()
+        except Exception:  # noqa: BLE001 - discovery is best-effort
+            return []
+        finally:
+            await _maybe_close(adapter)
+
     async def test(self, name: str) -> HealthResult:
         provider = self.get(name)
         if not provider:

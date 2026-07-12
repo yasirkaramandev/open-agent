@@ -39,7 +39,7 @@ We try to be precise about what is proven vs. pending, so nothing here is overso
 | API agents (OpenAI Chat/Responses, Anthropic, OpenAI-compatible) | Offline-tested end to end (mocked HTTP): tool loop, worktree diff, artifacts, redaction. Not yet exercised against a paid live key in CI. |
 | **Codex CLI** | Event schema validated **live** against `codex-cli 0.142.5`; the full run/cancel/terminal-state pipeline is exercised via a real-subprocess fake-CLI harness. A **successful real model turn is pending account/usage-limit availability**. |
 | **Claude Code** | **Fixture-validated** — the `stream-json` mapping and invocation are ready, but not yet run against an installed `claude` on this machine. Treat as unverified against a live CLI. |
-| TUI (dashboard, agents, providers, add/edit agent, run, approvals) | Pilot-tested (Textual) incl. creating Codex/Claude/API agents, validation, provider add, and the approval modal. |
+| TUI (dashboard, agents, providers, add/edit agent, run, approvals) | Pilot-tested against **Textual 8.2.8**, including **real keyboard-driven** dropdown selection (open overlay + arrow keys, not just `.value` assignment): creating Codex/Claude agents, the unified API onboarding (reuse a saved connection *or* connect a new API — key, Test Connection, Load Models — inside Add Agent), empty-selection handling (no crash, inline "Choose a CLI"), validation, provider add, and the approval modal. Every `Select` empty state is normalised so no Textual sentinel reaches a service or model. |
 | Security (minimal env, command allowlist, worktree isolation, redaction, process-tree cancel) | Unit + integration tested (see `tests/`). |
 | **AGY** | **Not part of v0.1.** |
 | **Gemini** | **Not part of v0.1.** |

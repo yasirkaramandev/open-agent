@@ -17,6 +17,18 @@ class AgentError(ValueError):
     pass
 
 
+def _require_str(value: object, what: str) -> str:
+    """Return ``value`` as a non-empty ``str`` or raise :class:`AgentError`.
+
+    The second boundary against Textual Select sentinels (``Select.NULL``/``NoSelection``) and any
+    other non-string reaching the service layer — see ``tui/select_utils.py``.
+    """
+
+    if not isinstance(value, str) or not value.strip():
+        raise AgentError(what)
+    return value.strip()
+
+
 class AgentService:
     def __init__(self, app: OpenAgentApp) -> None:
         self.app = app
@@ -36,11 +48,17 @@ class AgentService:
         system_prompt: str = "",
         permission_profile: str = "safe-edit",
     ) -> AgentProfile:
+        # Reject non-string bindings *before* Pydantic so a leaked Textual sentinel (Select.NULL)
+        # or any other non-string never reaches AgentRuntime and blows up with a raw ValidationError.
+        name = _require_str(name, "agent name is required")
         get_profile(permission_profile)  # validate
-        if runtime_type is RuntimeType.API_AGENT and not (provider and model):
-            raise AgentError("api-agent requires both --provider and --model")
-        if runtime_type is RuntimeType.CLI and not cli:
-            raise AgentError("cli agent requires --cli")
+        if runtime_type is RuntimeType.API_AGENT:
+            provider = _require_str(provider, "API agent requires a valid provider connection")
+            model = _require_str(model, "API agent requires a valid model id")
+            cli = None
+        elif runtime_type is RuntimeType.CLI:
+            cli = _require_str(cli, "CLI agent requires a valid CLI selection")
+            provider = model = None
         if self.repos.agents.get(name):
             raise AgentError(f"agent {name!r} already exists")
 

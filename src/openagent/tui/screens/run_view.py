@@ -25,6 +25,7 @@ from textual.widgets import (
 from ...core.events import NormalizedEvent
 from ...security.approvals import ApprovalRequest
 from ...services.run_service import RunError
+from ..select_utils import selected_string
 from .modals import ApprovalModal
 
 
@@ -170,9 +171,8 @@ class NewRunScreen(Screen):
         await self.app.oa.runs.cancel(run_id)  # type: ignore[attr-defined]
         self._write_log(f"[yellow]cancel requested for {run_id}[/yellow]")
 
-    def _value(self, wid: str):
-        value = self.query_one(f"#{wid}", Select).value
-        return None if value is Select.BLANK else value
+    def _value(self, wid: str) -> str | None:
+        return selected_string(self.query_one(f"#{wid}", Select))
 
 
 class OutputScreen(Screen):
