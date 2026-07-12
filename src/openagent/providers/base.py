@@ -121,6 +121,71 @@ async def collect(events: AsyncIterator[NormalizedModelEvent]) -> CollectedRespo
     return result
 
 
+_PROBE_SENTINEL = "PROBE_OK_7F"
+
+
+async def default_probe(adapter: Any, model_id: str, *, tool_probe: bool = True) -> ModelCapabilities:
+    """Honest capability probe shared by the model adapters (item 9).
+
+    Each capability is claimed **only when actually observed** with the request shape that proves
+    it — anything unproven stays ``None`` rather than defaulting to ``True``:
+
+    * ``text`` + ``system_prompt`` — a non-stream request whose system prompt asks for a sentinel
+      token; ``system_prompt`` is set only when the reply echoes it (the model demonstrably obeyed
+      the system prompt);
+    * ``streaming`` — a *real* streaming request; set only when it streams text back;
+    * ``tool_calling`` — a tool-enabled request; set only when a tool call comes back.
+
+    A transport/probe failure marks ``text=False`` and leaves the rest ``None``; a probe error never
+    flips an unverified capability to ``True``.
+    """
+
+    caps = ModelCapabilities(text=True, streaming=None, tool_calling=None, system_prompt=None)
+
+    text_req = NormalizedModelRequest(
+        model=model_id,
+        system=f"You are a probe. Reply with exactly this token and nothing else: {_PROBE_SENTINEL}",
+        messages=[Message(role=Role.USER, content="Follow your instructions.")],
+        max_tokens=16, stream=False,
+    )
+    try:
+        result = await collect(adapter.stream_response(text_req))
+    except Exception:  # noqa: BLE001 - any failure -> capabilities unknown, assert nothing
+        return ModelCapabilities(text=False)
+    if result.is_error:
+        return ModelCapabilities(text=False)
+    caps.text = bool(result.text)
+    if _PROBE_SENTINEL in (result.text or ""):
+        caps.system_prompt = True
+
+    stream_req = text_req.model_copy(update={"stream": True})
+    try:
+        sres = await collect(adapter.stream_response(stream_req))
+        if not sres.is_error and sres.text:
+            caps.streaming = True
+    except Exception:  # noqa: BLE001 - leave streaming unknown, never True
+        pass
+
+    if tool_probe:
+        tool_req = NormalizedModelRequest(
+            model=model_id,
+            messages=[Message(role=Role.USER, content="Call the ping tool with value 1.")],
+            tools=[{
+                "name": "ping", "description": "health probe",
+                "parameters": {"type": "object", "properties": {"value": {"type": "integer"}}},
+            }],
+            max_tokens=64, stream=False,
+        )
+        try:
+            tres = await collect(adapter.stream_response(tool_req))
+            if tres.tool_calls:
+                caps.tool_calling = True
+        except Exception:  # noqa: BLE001 - absence/err doesn't disprove support -> leave None
+            pass
+
+    return caps
+
+
 def rough_token_estimate(request: NormalizedModelRequest) -> TokenEstimate:
     """A cheap local heuristic (~4 chars/token) used when a provider has no token endpoint."""
 

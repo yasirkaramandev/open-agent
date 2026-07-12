@@ -22,11 +22,10 @@ from ..core.events import (
 from ..core.models import ModelCapabilities, RemoteModel
 from .base import (
     HealthResult,
-    Message,
     NormalizedModelRequest,
     Role,
     TokenEstimate,
-    collect,
+    default_probe,
     rough_token_estimate,
 )
 from .compat.profiles import CompatibilityProfile, get_compat
@@ -77,25 +76,9 @@ class OpenAIChatAdapter:
         return models
 
     async def probe_model(self, model_id: str) -> ModelCapabilities:
-        """Minimal capability probe (spec §25.2): a tiny tool-enabled request."""
+        """Capability probe (spec §25.2). Only claims capabilities actually observed (item 9)."""
 
-        caps = ModelCapabilities(text=True)
-        request = NormalizedModelRequest(
-            model=model_id,
-            system="You are a probe. Reply with the single word OK.",
-            messages=[Message(role=Role.USER, content="Say OK.")],
-            max_tokens=16,
-            stream=False,
-        )
-        try:
-            result = await collect(self.stream_response(request))
-            caps.text = not result.is_error and bool(result.text)
-            caps.system_prompt = True
-            caps.streaming = True
-            caps.tool_calling = None  # confirmed by a separate tool probe if desired
-        except TransportError:
-            caps.text = False
-        return caps
+        return await default_probe(self, model_id)
 
     async def count_tokens(self, request: NormalizedModelRequest) -> TokenEstimate:
         return rough_token_estimate(request)

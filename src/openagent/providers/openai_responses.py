@@ -18,6 +18,7 @@ from .base import (
     NormalizedModelRequest,
     Role,
     TokenEstimate,
+    default_probe,
     rough_token_estimate,
 )
 from .transport import Transport, TransportError
@@ -56,18 +57,7 @@ class OpenAIResponsesAdapter:
                 for i in data.get("data", []) if i.get("id")]
 
     async def probe_model(self, model_id: str) -> ModelCapabilities:
-        caps = ModelCapabilities(text=True)
-        try:
-            data = await self.transport.post_json(
-                "/responses",
-                {"model": model_id, "input": "Say OK.", "max_output_tokens": 16},
-            )
-            caps.text = bool(_extract_text(data.get("output", [])))
-            caps.system_prompt = True
-            caps.streaming = True
-        except TransportError:
-            caps.text = False
-        return caps
+        return await default_probe(self, model_id)
 
     async def count_tokens(self, request: NormalizedModelRequest) -> TokenEstimate:
         return rough_token_estimate(request)

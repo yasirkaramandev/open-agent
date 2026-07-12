@@ -22,6 +22,7 @@ from .base import (
     Role,
     TokenEstimate,
     collect,
+    default_probe,
     rough_token_estimate,
 )
 from .transport import Transport, TransportError
@@ -76,19 +77,7 @@ class AnthropicMessagesAdapter:
                 for i in items if i.get("id")]
 
     async def probe_model(self, model_id: str) -> ModelCapabilities:
-        caps = ModelCapabilities(text=True)
-        request = NormalizedModelRequest(
-            model=model_id, system="Reply with OK.",
-            messages=[Message(role=Role.USER, content="Say OK.")], max_tokens=16, stream=False,
-        )
-        try:
-            result = await collect(self.stream_response(request))
-            caps.text = not result.is_error and bool(result.text)
-            caps.system_prompt = True
-            caps.streaming = True
-        except TransportError:
-            caps.text = False
-        return caps
+        return await default_probe(self, model_id)
 
     async def count_tokens(self, request: NormalizedModelRequest) -> TokenEstimate:
         try:
