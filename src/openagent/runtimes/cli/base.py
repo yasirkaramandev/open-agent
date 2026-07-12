@@ -106,60 +106,90 @@ def parse_json_line(line: str) -> dict[str, Any] | None:
     return obj if isinstance(obj, dict) else None
 
 
+@dataclass
+class TerminalObservations:
+    """The distinct terminal events a CLI stream produced, kept for fail-closed reconciliation.
+
+    The first event of each outcome is retained (later duplicates of the *same* outcome are
+    dropped); a mix of different outcomes is a **conflict** (spec §43).
+    """
+
+    completed: NormalizedEvent | None = None
+    failed: NormalizedEvent | None = None
+    cancelled: NormalizedEvent | None = None
+
+    def observe(self, event: NormalizedEvent) -> None:
+        etype = event.type if isinstance(event.type, str) else event.type.value
+        if etype == EventType.RUN_COMPLETED.value and self.completed is None:
+            self.completed = event
+        elif etype == EventType.RUN_FAILED.value and self.failed is None:
+            self.failed = event
+        elif etype == EventType.RUN_CANCELLED.value and self.cancelled is None:
+            self.cancelled = event
+
+    @property
+    def conflicting(self) -> bool:
+        return sum(x is not None for x in (self.completed, self.failed, self.cancelled)) > 1
+
+
 def reconcile_terminal(
     *,
     run_id: str,
     source: str,
-    captured: NormalizedEvent | None,
+    observations: TerminalObservations,
     exit_code: int | None,
     cancelled: bool,
     stderr: str = "",
 ) -> NormalizedEvent:
-    """Produce the single terminal event for a run, reconciled with the exit code (spec §6.2, §43).
+    """Produce the single terminal event for a run, **fail-closed** (spec §6.2, §43).
 
-    ``captured`` is the first terminal event the CLI's own stream produced (or ``None``). Rules:
+    Precedence — ``cancelled > failed > completed`` — never silently drops a later failure:
 
-    * a cancellation-in-progress always wins → ``run.cancelled`` (a killed "success" is not success);
-    * a stream ``run.completed`` is honored **only** when the process exited cleanly (0/None); a
-      non-zero exit turns it into ``run.failed`` (exit code contradicts the success claim);
-    * a stream ``run.failed`` / ``run.cancelled`` is kept as-is (a zero exit never rescues it);
+    * explicit user/process **cancellation** always wins → ``run.cancelled`` (a killed "success" is
+      not success);
+    * any native ``run.failed`` makes the result **failed** — a zero exit never rescues it. When it
+      conflicts with a ``run.completed`` the failure is tagged ``terminal_conflict``;
+    * a native ``run.cancelled`` (with no failure) makes the result **cancelled**, even if the stream
+      also claimed completion;
+    * ``run.completed`` is honored **only** when it is the sole outcome *and* the process exited
+      cleanly (0/None); a non-zero exit turns it into ``run.failed`` (``exit_code_mismatch``);
     * no terminal event at all → ``run.failed`` (clean-exit-but-no-result or a non-zero exit).
     """
+
+    def fail(error_type: str, message: str) -> NormalizedEvent:
+        return NormalizedEvent(
+            run_id=run_id, type=EventType.RUN_FAILED, source=source,
+            data={"error_type": error_type, "exit_code": exit_code, "message": message,
+                  "stderr": (stderr or "")[-2000:]},
+        )
 
     if cancelled:
         return NormalizedEvent(
             run_id=run_id, type=EventType.RUN_CANCELLED, source=source,
             data={"reason": "cancelled by user", "exit_code": exit_code},
         )
-    captured_type = None
-    if captured is not None:
-        captured_type = captured.type if isinstance(captured.type, str) else captured.type.value
 
-    if captured_type == EventType.RUN_COMPLETED.value:
+    comp, failed, canc = observations.completed, observations.failed, observations.cancelled
+
+    # A native failure always wins over a completion (fail-closed); flag genuine contradictions.
+    if failed is not None:
+        if comp is not None or canc is not None:
+            return fail("terminal_conflict",
+                        "CLI emitted conflicting terminal events; a failure was reported")
+        return failed
+    # A native cancellation (no failure) stands, even alongside a completion claim.
+    if canc is not None:
+        return canc
+    if comp is not None:
         if exit_code in (0, None):
-            return captured  # type: ignore[return-value]
-        return NormalizedEvent(
-            run_id=run_id, type=EventType.RUN_FAILED, source=source,
-            data={
-                "error_type": "exit_code_mismatch", "exit_code": exit_code,
-                "message": f"CLI reported success but exited with code {exit_code}",
-                "stderr": (stderr or "")[-2000:],
-            },
-        )
-    if captured_type in (EventType.RUN_FAILED.value, EventType.RUN_CANCELLED.value):
-        return captured  # type: ignore[return-value]
+            return comp
+        return fail("exit_code_mismatch",
+                    f"CLI reported success but exited with code {exit_code}")
 
     clean = exit_code in (0, None)
     detail = "clean exit but no terminal event" if clean else f"exit code {exit_code}"
-    return NormalizedEvent(
-        run_id=run_id, type=EventType.RUN_FAILED, source=source,
-        data={
-            "error_type": "no_terminal_event" if clean else "command_failed",
-            "exit_code": exit_code,
-            "message": f"CLI produced no successful result ({detail})",
-            "stderr": (stderr or "")[-2000:],
-        },
-    )
+    return fail("no_terminal_event" if clean else "command_failed",
+                f"CLI produced no successful result ({detail})")
 
 
 async def run_managed_cli(
@@ -171,10 +201,11 @@ async def run_managed_cli(
 
     * emits ``run.started`` (with pid/create_time) up front;
     * yields non-terminal events as they stream;
-    * **buffers** terminal events — keeps only the first, drops the rest — and after the process
-      exits yields exactly one terminal event reconciled against the exit code
-      (:func:`reconcile_terminal`). A success event + non-zero exit becomes failed; a killed process
-      becomes cancelled; two terminal events collapse to one.
+    * **buffers every** terminal event (never surfacing one mid-stream) and after the process exits
+      yields exactly one terminal event reconciled fail-closed against the exit code
+      (:func:`reconcile_terminal`): a success event + non-zero exit becomes failed; a killed process
+      becomes cancelled; a completion followed by a failure becomes failed (``terminal_conflict``);
+      duplicate completions collapse to one.
     """
 
     await proc.start()
@@ -182,20 +213,19 @@ async def run_managed_cli(
         run_id=run_id, type=EventType.RUN_STARTED, source=source,
         data={"pid": proc.pid, "create_time": proc.create_time},
     )
-    captured: NormalizedEvent | None = None
+    observations = TerminalObservations()
     async for line in proc.stream_stdout():
         obj = parse_json_line(line)
         if obj is None:
             continue
         for event in mapper(obj, run_id):
             if is_terminal_event(event):
-                if captured is None:
-                    captured = event  # keep the first; later terminal events are dropped
-                continue  # never surface a terminal event mid-stream; it's reconciled at the end
+                observations.observe(event)  # buffer all outcomes; reconciled once at the end
+                continue
             yield event
     code = await proc.wait()
     yield reconcile_terminal(
-        run_id=run_id, source=source, captured=captured,
+        run_id=run_id, source=source, observations=observations,
         exit_code=code, cancelled=proc.cancelled, stderr=proc.stderr,
     )
 

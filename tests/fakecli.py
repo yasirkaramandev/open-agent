@@ -88,10 +88,22 @@ FAKE_SCRIPT = textwrap.dedent(
         emit({"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}})
         sys.exit(1)
     if mode == "double_terminal":
-        # Two terminal events in the stream -> exactly one must survive.
+        # completed -> failed, exit 0. Fail-closed: the later failure must win (terminal_conflict).
         emit({"type": "thread.started", "thread_id": "th-fake-1"})
         emit({"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}})
         emit({"type": "turn.failed", "error": {"message": "second terminal"}})
+        sys.exit(0)
+    if mode == "fail_then_complete":
+        # failed -> completed, exit 0. The earlier failure must still win (fail-closed).
+        emit({"type": "thread.started", "thread_id": "th-fake-1"})
+        emit({"type": "turn.failed", "error": {"message": "first failure"}})
+        emit({"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}})
+        sys.exit(0)
+    if mode == "double_complete":
+        # completed -> completed, exit 0. Same outcome twice collapses to a single completed.
+        emit({"type": "thread.started", "thread_id": "th-fake-1"})
+        emit({"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}})
+        emit({"type": "turn.completed", "usage": {"input_tokens": 2, "output_tokens": 2}})
         sys.exit(0)
     if mode == "malformed":
         print("{ this is not valid json", flush=True)

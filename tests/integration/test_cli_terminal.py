@@ -68,14 +68,28 @@ async def test_success_event_but_nonzero_exit_is_failed(script: Path, tmp_path: 
     assert failed.data.get("error_type") == "exit_code_mismatch"
 
 
-async def test_two_terminal_events_collapse_to_one(script: Path, tmp_path: Path):
+async def test_completed_then_failed_is_conflict_failure(script: Path, tmp_path: Path):
+    # completed -> failed, exit 0: fail-closed — the later failure must win, not the earlier success.
     events = await _run(FakeCliAdapter(script, mode="double_terminal"), tmp_path)
-    # Only the first terminal event survives; it exited 0 so completion stands.
+    assert _terminals(events) == [EventType.RUN_FAILED.value]
+    failed = next(e for e in events if (e.type if isinstance(e.type, str) else e.type.value)
+                  == EventType.RUN_FAILED.value)
+    assert failed.data.get("error_type") == "terminal_conflict"
+
+
+async def test_failed_then_completed_is_failure(script: Path, tmp_path: Path):
+    # failed -> completed, exit 0: the earlier failure is not rescued by a later completion.
+    events = await _run(FakeCliAdapter(script, mode="fail_then_complete"), tmp_path)
+    assert _terminals(events) == [EventType.RUN_FAILED.value]
+
+
+async def test_two_completions_collapse_to_one(script: Path, tmp_path: Path):
+    events = await _run(FakeCliAdapter(script, mode="double_complete"), tmp_path)
     assert _terminals(events) == [EventType.RUN_COMPLETED.value]
 
 
 async def test_exactly_one_terminal_event(script: Path, tmp_path: Path):
     for mode in ("complete", "silent0", "fail1", "malformed", "usage_limit",
-                 "success_exit1", "double_terminal"):
+                 "success_exit1", "double_terminal", "fail_then_complete", "double_complete"):
         events = await _run(FakeCliAdapter(script, mode=mode), tmp_path)
         assert len(_terminals(events)) == 1, f"{mode} produced {_terminals(events)}"
