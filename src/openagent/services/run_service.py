@@ -143,7 +143,8 @@ class RunService:
         try:
             rtype = agent.runtime.type
             if rtype is RuntimeType.API_AGENT or rtype == RuntimeType.API_AGENT.value:
-                await self._run_api(run, agent, workspace.root, sink, art, state, approval_callback)
+                await self._run_api(run, agent, workspace.root, sink, art, state,
+                                    approval_callback, workspace.describe_for_agent())
             else:
                 await self._run_cli(run, agent, workspace.root, sink, state)
         except Exception as exc:  # noqa: BLE001 - convert to a failed run
@@ -191,7 +192,8 @@ class RunService:
             self.repos.runs.upsert(run)
 
     async def _run_api(self, run, agent, root: Path, sink, art, state,
-                       approval_callback: ApprovalCallback | None = None) -> None:
+                       approval_callback: ApprovalCallback | None = None,
+                       workspace_note: str = "") -> None:
         provider = self.repos.providers.get_by_name(agent.runtime.provider or "")
         if not provider:
             raise RunError(f"provider {agent.runtime.provider!r} not found")
@@ -217,7 +219,7 @@ class RunService:
         try:
             outcome = await run_api_agent(
                 run_id=run.id, agent=agent, prompt=run.prompt, adapter=adapter,
-                executor=executor, workspace_root=root, emit=sink,
+                executor=executor, workspace_root=root, emit=sink, workspace_note=workspace_note,
             )
         finally:
             transport = getattr(adapter, "transport", None)

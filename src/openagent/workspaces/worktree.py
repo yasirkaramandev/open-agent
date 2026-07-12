@@ -72,6 +72,28 @@ class Workspace:
         # A copy is unversioned; running in place mutates the user's tree directly.
         return self.is_copy or self.in_place
 
+    def describe_for_agent(self) -> str:
+        """A truthful one-line description of where the agent is writing (item 17).
+
+        The API-agent system prompt must not always claim "isolated worktree": the real strategy
+        determines the safety story, and ``none`` mode writes to the user's actual project.
+        """
+
+        if self.in_place:
+            return (
+                "You are working DIRECTLY in the user's project directory — there is NO isolation. "
+                "Every edit changes their real files immediately, so be minimal and careful."
+            )
+        if self.is_copy:
+            return (
+                "You are working in an isolated COPY of the project (not a git worktree). Your "
+                "changes stay in the copy; the user reviews the diff before applying it."
+            )
+        return (
+            "You are working inside an isolated git worktree on a scratch branch. Your changes do "
+            "not touch the user's working tree; they review the diff afterward."
+        )
+
 
 class WorktreeManager:
     def __init__(self, project_root: Path, worktrees_dir: Path) -> None:

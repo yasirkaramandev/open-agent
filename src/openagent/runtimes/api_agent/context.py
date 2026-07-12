@@ -21,13 +21,17 @@ Working rules:
 - Make minimal, testable changes. Prefer apply_patch over write_file.
 - Read files before editing them. Do not assume file contents.
 - Use run_tests to verify your changes when possible.
-- When finished, call finish_task with a concise summary of what changed.
-- You are working inside an isolated worktree; the user reviews your diff afterward."""
+- When finished, call finish_task with a concise summary of what changed."""
+
+#: Used only when the caller doesn't supply the real workspace description (item 17).
+_DEFAULT_WORKSPACE_NOTE = "You are working inside an isolated workspace; the user reviews your diff."
 
 
-def build_system_prompt(agent: AgentProfile) -> str:
+def build_system_prompt(agent: AgentProfile, workspace_note: str = "") -> str:
+    note = workspace_note.strip() or _DEFAULT_WORKSPACE_NOTE
+    body = f"{_WORKING_RULES}\n- {note}"
     base = agent.system_prompt.strip()
-    return f"{base}\n\n{_WORKING_RULES}" if base else _WORKING_RULES
+    return f"{base}\n\n{body}" if base else body
 
 
 def build_initial_messages(agent: AgentProfile, prompt: str, workspace_root: Path) -> list[Message]:

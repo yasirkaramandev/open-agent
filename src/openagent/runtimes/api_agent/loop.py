@@ -49,9 +49,10 @@ async def run_api_agent(
     workspace_root: Path,
     emit: Emit,
     temperature: float | None = None,
+    workspace_note: str = "",
 ) -> ApiRunOutcome:
     model = agent.runtime.model or ""
-    system = build_system_prompt(agent)
+    system = build_system_prompt(agent, workspace_note)
     conversation = build_initial_messages(agent, prompt, workspace_root)
     tools = schemas_for_profile(executor.ctx.profile)
     total = TokenUsage()
