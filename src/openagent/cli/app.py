@@ -8,6 +8,7 @@ from an environment variable.
 from __future__ import annotations
 
 import asyncio
+from typing import NoReturn
 
 import typer
 from rich.console import Console
@@ -20,6 +21,7 @@ from ..core.models import Protocol, RuntimeType
 from ..core.permissions import profile_names
 from ..providers.factory import PRESETS, preset_names
 from ..services.agent_service import AgentError
+from ..services.provider_service import ProviderValidationError
 from ..services.run_service import RunError
 
 app = typer.Typer(
@@ -43,7 +45,7 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def _fail(message: str) -> None:
+def _fail(message: str) -> NoReturn:
     err.print(f"[red]error:[/red] {message}")
     raise typer.Exit(1)
 
@@ -251,14 +253,19 @@ def provider_add(
     oa = _app()
     if oa.providers.get(name):
         _fail(f"provider {name!r} already exists")
+    credential_source = "none" if no_key else ("env" if key_env else "keychain")
     api_key = None
-    if not no_key and not key_env:
+    if credential_source == "keychain":
         api_key = typer.prompt(f"API key for {name}", hide_input=True)
     proto = Protocol(protocol) if protocol else None
-    provider = oa.providers.add(
-        name=name, provider_type=type, protocol=proto, base_url=base_url,
-        api_key=api_key, key_env=key_env, region=region, workspace_id=workspace_id,
-    )
+    try:
+        provider = oa.providers.add(
+            name=name, provider_type=type, protocol=proto, base_url=base_url,
+            api_key=api_key, key_env=key_env, credential_source=credential_source,
+            region=region, workspace_id=workspace_id,
+        )
+    except ProviderValidationError as exc:
+        _fail(str(exc))
     console.print(f"[green]✓[/green] provider [bold]{name}[/bold] added "
                   f"({provider.provider_type}, {provider.protocol.value})")
     console.print(f"  test it: [bold]openagent provider test {name}[/bold]")

@@ -15,6 +15,69 @@ if TYPE_CHECKING:
     from ..app import OpenAgentApp
 
 
+class ProviderValidationError(ValueError):
+    """A provider's credential configuration is invalid (missing key/env var, illegal 'none').
+
+    Carries the offending form ``field`` so the TUI can surface the message inline under it.
+    """
+
+    def __init__(self, message: str, *, field: str = "") -> None:
+        super().__init__(message)
+        self.field = field
+
+
+def resolve_credential(
+    *,
+    name: str,
+    provider_type: str,
+    api_key: str | None,
+    key_env: str | None,
+    credential_source: str | None = None,
+) -> CredentialRef:
+    """Validate the credential inputs and build a :class:`CredentialRef`, or fail closed.
+
+    This is the single source of truth for "is this provider's credential acceptable" — the CLI,
+    the Add Provider screen, and the Add Agent connect-new flow all go through
+    :meth:`ProviderService.add`, which calls this. Nothing is persisted if it raises.
+    """
+
+    preset = get_preset(provider_type)
+    needs_key = preset.needs_key if preset else True
+    # An explicit "no key" is only legitimate for providers that don't need one (ollama, LM Studio)
+    # or a bespoke endpoint the user is knowingly configuring (custom / unknown preset).
+    none_allowed = (not needs_key) or provider_type == "custom" or preset is None
+
+    source = credential_source or ("env" if key_env else "keychain")
+    key = (api_key or "").strip()
+    env_var = (key_env or "").strip()
+
+    if source == "env":
+        if not env_var:
+            raise ProviderValidationError(
+                "environment variable name is required for an env-var credential", field="key_env"
+            )
+        return CredentialRef(type=CredentialType.ENV, env_var=env_var)
+
+    if source == "none":
+        if not none_allowed:
+            raise ProviderValidationError(
+                f"provider type {provider_type!r} requires a key; 'no key' is only for local "
+                "providers (ollama, lmstudio) or a custom endpoint",
+                field="api_key",
+            )
+        return CredentialRef(type=CredentialType.NONE)
+
+    # Default: OS keychain.
+    if not key:
+        if needs_key:
+            raise ProviderValidationError(
+                "an API key is required for this provider", field="api_key"
+            )
+        # A no-key provider configured via the keychain source but left blank: store nothing.
+        return CredentialRef(type=CredentialType.NONE)
+    return CredentialRef(type=CredentialType.KEYCHAIN, service="openagent", account=f"provider/{name}")
+
+
 class ProviderService:
     def __init__(self, app: OpenAgentApp) -> None:
         self.app = app
@@ -31,6 +94,7 @@ class ProviderService:
         anthropic_base_url: str | None = None,
         api_key: str | None = None,
         key_env: str | None = None,
+        credential_source: str | None = None,
         region: str | None = None,
         workspace_id: str | None = None,
         extra_headers: dict[str, str] | None = None,
@@ -38,19 +102,21 @@ class ProviderService:
     ) -> ProviderConnection:
         """Register a provider and store its key in the OS keychain (spec §30).
 
-        ``key_env`` references an environment variable instead of storing a secret (nothing is
-        persisted). Otherwise ``api_key`` is written to the OS keychain.
+        The credential is validated first (:func:`resolve_credential`) and this method **fails
+        closed**: if the key/env-var is missing or 'no key' is illegal for this provider type, it
+        raises :class:`ProviderValidationError` and writes nothing to the DB or keychain.
+
+        ``key_env`` references an environment variable instead of storing a secret; ``api_key`` is
+        written to the OS keychain. ``credential_source`` (``keychain``/``env``/``none``) makes the
+        user's choice explicit; when omitted it is inferred from the inputs.
         """
 
         preset = get_preset(provider_type)
         resolved_protocol = protocol or (preset.protocol if preset else Protocol.OPENAI_CHAT)
-        if key_env:
-            credential = CredentialRef(type=CredentialType.ENV, env_var=key_env)
-        else:
-            credential = CredentialRef(type=CredentialType.KEYCHAIN, service="openagent",
-                                       account=f"provider/{name}")
-            if not api_key and preset and not preset.needs_key:
-                credential = CredentialRef(type=CredentialType.NONE)
+        credential = resolve_credential(
+            name=name, provider_type=provider_type, api_key=api_key, key_env=key_env,
+            credential_source=credential_source,
+        )
 
         provider = ProviderConnection(
             id=f"provider_{name}",

@@ -50,15 +50,16 @@ async def test_save_provider_then_available_in_add_agent(tmp_path: Path):
         pilot.app.push_screen(AddProviderScreen())
         await pilot.pause()
         screen = pilot.app.screen
-        screen.query_one("#name", Input).value = "deepseek-main"
-        screen.query_one("#preset", Select).value = "deepseek"
+        # A key-less local provider ('no key' is legal for ollama) — saves without a keychain write.
+        screen.query_one("#name", Input).value = "local-llm"
+        screen.query_one("#preset", Select).value = "ollama"
         screen.query_one("#cred", Select).value = "none"
         await pilot.pause()
         screen.action_save()
         await pilot.pause()
 
     # Persisted…
-    assert oa.providers.get("deepseek-main") is not None
+    assert oa.providers.get("local-llm") is not None
 
     # …and immediately selectable in the Add Agent form.
     app2 = OpenAgentTUI(oa)
@@ -69,7 +70,27 @@ async def test_save_provider_then_available_in_add_agent(tmp_path: Path):
         assert isinstance(add, AddAgentScreen)
         provider_values = [opt[1] for opt in add.query_one("#provider", Select)._options  # type: ignore[attr-defined]
                            if opt[1] is not None]
-        assert "deepseek-main" in provider_values
+        assert "local-llm" in provider_values
+
+
+async def test_save_key_required_provider_with_no_credential_is_rejected(tmp_path: Path):
+    """The Add Provider screen refuses to persist a key-required provider set to 'no key'."""
+
+    oa = _app(tmp_path)
+    app = OpenAgentTUI(oa)
+    async with app.run_test() as pilot:
+        pilot.app.push_screen(AddProviderScreen())
+        await pilot.pause()
+        screen = pilot.app.screen
+        screen.query_one("#name", Input).value = "deepseek-main"
+        screen.query_one("#preset", Select).value = "deepseek"
+        screen.query_one("#cred", Select).value = "none"
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+        # Nothing persisted, and the error is shown inline (screen stays open).
+        assert oa.providers.get("deepseek-main") is None
+        assert isinstance(pilot.app.screen, AddProviderScreen)
 
 
 async def test_saved_key_never_displayed(tmp_path: Path):

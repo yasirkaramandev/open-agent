@@ -18,6 +18,7 @@ from textual.widgets import Button, Footer, Header, Input, Label, Select, Static
 
 from ...core.models import Protocol
 from ...providers.factory import PRESETS, preset_names
+from ...services.provider_service import ProviderValidationError
 from ..select_utils import selected_string
 
 _CRED_SOURCES = [
@@ -150,11 +151,14 @@ class AddProviderScreen(Screen):
         if oa.providers.get(p["name"]):
             self._status(f"[red]provider {p['name']!r} already exists[/red]")
             return
-        oa.providers.add(
-            name=p["name"], provider_type=p["provider_type"], protocol=p["protocol"],
-            base_url=p["base_url"], region=p["region"], workspace_id=p["workspace_id"],
-            api_key=p["api_key"], key_env=p["key_env"],
-            store_key=p["cred"] == "keychain" and bool(p["api_key"]),
-        )
+        try:
+            oa.providers.add(
+                name=p["name"], provider_type=p["provider_type"], protocol=p["protocol"],
+                base_url=p["base_url"], region=p["region"], workspace_id=p["workspace_id"],
+                api_key=p["api_key"], key_env=p["key_env"], credential_source=p["cred"],
+            )
+        except ProviderValidationError as exc:
+            self._status(f"[red]✗ {exc}[/red]")
+            return
         self.notify(f"provider '{p['name']}' saved")
         self.dismiss(True)

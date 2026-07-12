@@ -31,6 +31,7 @@ from ...credentials.store import CredentialError
 from ...providers.factory import PRESETS, preset_names
 from ...runtimes.cli.registry import cli_install_status
 from ...services.agent_service import AgentError
+from ...services.provider_service import ProviderValidationError
 from ..select_utils import selected_string
 
 try:  # keyring errors are environment-dependent; treat them as expected/recoverable when present
@@ -315,12 +316,17 @@ class AddAgentScreen(Screen):
             return None
         if errors:  # e.g. missing model — don't persist a connection we're about to reject
             return None
-        oa.providers.add(
-            name=p["name"], provider_type=p["provider_type"], protocol=p["protocol"],
-            base_url=p["base_url"], region=p["region"], workspace_id=p["workspace_id"],
-            api_key=p["api_key"], key_env=p["key_env"],
-            store_key=p["cred"] == "keychain" and bool(p["api_key"]),
-        )
+        try:
+            oa.providers.add(
+                name=p["name"], provider_type=p["provider_type"], protocol=p["protocol"],
+                base_url=p["base_url"], region=p["region"], workspace_id=p["workspace_id"],
+                api_key=p["api_key"], key_env=p["key_env"], credential_source=p["cred"],
+            )
+        except ProviderValidationError as exc:
+            errors.append(str(exc))
+            self._status(f"[red]✗ {exc}[/red]")
+            self._field_error("err-conn", "credential invalid")
+            return None
         self.notify(f"provider '{p['name']}' connected", severity="information")
         return p["name"]
 
