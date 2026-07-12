@@ -111,3 +111,92 @@ def test_add_persists_env_provider_without_touching_keychain(tmp_path: Path) -> 
                             credential_source="env")
     assert prov.credential.type is CredentialType.ENV
     assert oa.providers.get("ds") is not None
+
+
+# --------------------------------------------------------------------------- rollback (item 5)
+
+def _keychain_ref(name: str):
+    from openagent.core.models import CredentialRef
+    return CredentialRef(type=CredentialType.KEYCHAIN, service="openagent",
+                         account=f"provider/{name}")
+
+
+def test_add_rolls_back_keychain_secret_when_row_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the provider row write fails, the freshly written keychain secret is deleted, and no
+    provider / agent / OPENAGENT.md entry is left behind (item 5)."""
+
+    oa = _app(tmp_path)
+    deleted: list[str] = []
+    real_delete = oa.credentials.delete_secret
+
+    def _spy_delete(ref) -> None:
+        deleted.append(ref.account or "")
+        real_delete(ref)
+
+    monkeypatch.setattr(oa.credentials, "delete_secret", _spy_delete)
+
+    def _boom(_provider: object) -> None:  # 2. provider row write raises
+        raise RuntimeError("simulated DB failure")
+
+    monkeypatch.setattr(oa.repos.providers, "upsert", _boom)
+
+    with pytest.raises(RuntimeError, match="simulated DB failure"):
+        oa.providers.add(name="deepseek-main", provider_type="deepseek", api_key="sk-secret",
+                         credential_source="keychain")
+
+    assert deleted == ["provider/deepseek-main"]  # 3. delete_secret called for this account
+    assert oa.credentials.resolve(_keychain_ref("deepseek-main")) is None  # secret gone
+    assert oa.providers.get("deepseek-main") is None  # 4. provider absent
+    assert oa.agents.get("deepseek-main") is None  # 5. agent absent
+    md = oa.paths.openagent_md()  # 6. no OPENAGENT.md entry
+    assert (not md.exists()) or "deepseek-main" not in md.read_text(encoding="utf-8")
+
+
+def test_add_rollback_does_not_delete_a_preexisting_secret(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A secret that existed before the failed add is preserved — rollback only removes a secret
+    that this call newly created (item 5)."""
+
+    oa = _app(tmp_path)
+    ref = _keychain_ref("reuse")
+    oa.credentials.set_secret(ref, "old-secret")
+
+    monkeypatch.setattr(oa.repos.providers, "upsert",
+                        lambda _p: (_ for _ in ()).throw(RuntimeError("db down")))
+    with pytest.raises(RuntimeError):
+        oa.providers.add(name="reuse", provider_type="deepseek", api_key="new-secret",
+                         credential_source="keychain")
+    # A secret still exists for this account — rollback did not delete the pre-existing credential.
+    assert oa.credentials.resolve(ref) is not None
+
+
+# --------------------------------------------------------------------------- duplicate rejection (item 6)
+
+def test_add_rejects_duplicate_provider_name(tmp_path: Path) -> None:
+    oa = _app(tmp_path)
+    oa.providers.add(name="dup", provider_type="deepseek", api_key="sk-first",
+                     credential_source="keychain")
+    with pytest.raises(ProviderValidationError) as exc:
+        oa.providers.add(name="dup", provider_type="deepseek", api_key="sk-second",
+                         credential_source="keychain")
+    assert exc.value.field == "name"
+
+
+def test_duplicate_add_leaves_original_secret_untouched(tmp_path: Path) -> None:
+    """A rejected duplicate must not overwrite or create an orphaned replacement secret (item 6)."""
+
+    from openagent.core.models import CredentialRef
+
+    oa = _app(tmp_path)
+    oa.providers.add(name="dup", provider_type="deepseek", api_key="sk-first",
+                     credential_source="keychain")
+    ref = CredentialRef(type=CredentialType.KEYCHAIN, service="openagent", account="provider/dup")
+    assert oa.credentials.resolve(ref) == "sk-first"
+    with pytest.raises(ProviderValidationError):
+        oa.providers.add(name="dup", provider_type="deepseek", api_key="sk-second",
+                         credential_source="keychain")
+    # The original secret is unchanged; the rejected duplicate wrote nothing.
+    assert oa.credentials.resolve(ref) == "sk-first"

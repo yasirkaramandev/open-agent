@@ -114,13 +114,25 @@ class ProviderService:
         """Register a provider and store its key in the OS keychain (spec §30).
 
         The credential is validated first (:func:`resolve_credential`) and this method **fails
-        closed**: if the key/env-var is missing or 'no key' is illegal for this provider type, it
-        raises :class:`ProviderValidationError` and writes nothing to the DB or keychain.
+        closed** and **atomically**:
+
+        * a **duplicate name is rejected at the service layer** (item 6) — the CLI/TUI checks are a
+          convenience, not the authority. ``upsert`` never silently overwrites an existing provider;
+        * if the key/env-var is missing or 'no key' is illegal for this provider type, it raises
+          :class:`ProviderValidationError` and writes nothing to the DB or keychain;
+        * the keychain secret is written **before** the provider row, but if the row write fails the
+          freshly written secret is rolled back so a persistence failure can never leave an orphaned
+          key in the OS keychain (item 5). A pre-existing secret is never deleted.
 
         ``key_env`` references an environment variable instead of storing a secret; ``api_key`` is
         written to the OS keychain. ``credential_source`` (``keychain``/``env``/``none``) makes the
         user's choice explicit; when omitted it is inferred from the inputs.
         """
+
+        if self.get(name) is not None:
+            raise ProviderValidationError(
+                f"provider {name!r} already exists", field="name"
+            )
 
         preset = get_preset(provider_type)
         resolved_protocol = protocol or (preset.protocol if preset else Protocol.OPENAI_CHAT)
@@ -141,9 +153,19 @@ class ProviderService:
             workspace_id=workspace_id,
             extra_headers=extra_headers or {},
         )
+        wrote_secret = False
         if api_key and store_key and credential.type is CredentialType.KEYCHAIN:
+            # Guard against clobbering-then-orphaning a pre-existing secret: only a secret this call
+            # wrote (where none existed) is rolled back on failure.
+            had_secret_before = self.credentials.resolve(credential) is not None
             self.credentials.set_secret(credential, api_key)
-        self.repos.providers.upsert(provider)
+            wrote_secret = not had_secret_before
+        try:
+            self.repos.providers.upsert(provider)
+        except Exception:
+            if wrote_secret:
+                self.credentials.delete_secret(credential)
+            raise
         return provider
 
     def list(self) -> Sequence[ProviderConnection]:

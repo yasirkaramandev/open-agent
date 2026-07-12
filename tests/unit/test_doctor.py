@@ -9,6 +9,8 @@ import pytest
 from openagent.app import OpenAgentApp
 from openagent.config import Paths
 from openagent.core.models import (
+    AgentProfile,
+    AgentRuntime,
     CredentialRef,
     CredentialType,
     Protocol,
@@ -55,8 +57,12 @@ async def test_env_credential_var_unset_is_warn(tmp_path: Path, monkeypatch: pyt
 
 async def test_agent_missing_provider_is_fail(tmp_path: Path):
     oa = _app(tmp_path)
-    oa.agents.create(name="ghost-agent", runtime_type=RuntimeType.API_AGENT,
-                     provider="does-not-exist", model="m")
+    # A *legacy* broken record: written straight to the repo, bypassing service validation (which
+    # now rejects a dangling provider at creation — item 7). Doctor must still flag it (item 20).
+    oa.repos.agents.upsert(AgentProfile(
+        name="ghost-agent",
+        runtime=AgentRuntime(type=RuntimeType.API_AGENT, provider="does-not-exist", model="m"),
+    ))
     checks = _checks_by_name(await oa.doctor.run())
     assert checks["Agent: ghost-agent"].status == FAIL
     assert "missing provider" in checks["Agent: ghost-agent"].detail

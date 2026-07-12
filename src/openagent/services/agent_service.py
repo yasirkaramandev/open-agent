@@ -56,6 +56,10 @@ class AgentService:
             provider = _require_str(provider, "API agent requires a valid provider connection")
             model = _require_str(model, "API agent requires a valid model id")
             cli = None
+            # Fail closed on a dangling reference: an API agent must point at a provider that
+            # actually exists, so a run never dies later with "provider not found" (item 7).
+            if self.app.providers.get(provider) is None:
+                raise AgentError(f"provider {provider!r} does not exist")
         elif runtime_type is RuntimeType.CLI:
             cli = _require_str(cli, "CLI agent requires a valid CLI selection")
             provider = model = None

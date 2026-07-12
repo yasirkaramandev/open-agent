@@ -65,3 +65,22 @@ def test_valid_cli_agent_succeeds(tmp_path: Path):
     agent = oa.agents.create(name="ok", runtime_type=RuntimeType.CLI, cli="codex")
     assert agent.runtime.cli == "codex"
     assert agent.runtime.provider is None and agent.runtime.model is None
+
+
+# --------------------------------------------------------------------------- provider reference (item 7)
+
+def test_api_agent_with_missing_provider_reference_raises(tmp_path: Path):
+    oa = _oa(tmp_path)
+    with pytest.raises(AgentError, match="provider 'nope' does not exist"):
+        oa.agents.create(name="x", runtime_type=RuntimeType.API_AGENT,
+                         provider="nope", model="m")
+    assert oa.agents.get("x") is None
+
+
+def test_api_agent_with_existing_provider_reference_succeeds(tmp_path: Path):
+    oa = _oa(tmp_path)
+    oa.providers.add(name="ds", provider_type="deepseek", key_env="DS_KEY",
+                     credential_source="env")
+    agent = oa.agents.create(name="ok", runtime_type=RuntimeType.API_AGENT,
+                             provider="ds", model="deepseek-chat")
+    assert agent.runtime.provider == "ds" and agent.runtime.model == "deepseek-chat"
