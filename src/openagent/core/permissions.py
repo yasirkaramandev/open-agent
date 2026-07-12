@@ -56,7 +56,7 @@ PROFILES: dict[str, PermissionProfile] = {
     ),
     SAFE_EDIT: PermissionProfile(
         name=SAFE_EDIT,
-        description="Edit files in the workspace, run tests/build. No network, no push, no publish.",
+        description="Edit files in the workspace, run tests/build. Network commands need approval; no push/publish.",
         allowed_tools=_FULL_TOOLS,
         can_edit_files=True,
         can_run_commands=True,

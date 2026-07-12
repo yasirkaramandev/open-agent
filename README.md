@@ -105,18 +105,27 @@ Storage:        SQLite (index) · events.jsonl (source of truth) · artifacts
   stored once.
 * **Dynamic models.** Model IDs are never hardcoded — OpenAgent discovers them and probes
   capabilities per model.
-* **Safety first.** Every file-changing run happens in an isolated worktree. Commands run in a
-  minimal environment (no inherited secrets) behind an executable **allowlist**; secrets are redacted
-  from every artifact — including the prompt and the diff — and never passed as command arguments.
+* **Safety first (policy-level, not an OS sandbox).** Every file-changing run happens in an isolated
+  worktree/copy, so your real project is untouched until you apply. Commands run in a minimal
+  environment (no inherited secrets) behind an executable **allowlist** with approval gating; secrets
+  are redacted from every artifact — including the prompt and the diff — and never passed as command
+  arguments. v0.1 does **not** add a kernel-level network/filesystem sandbox around subprocesses —
+  see [SECURITY.md](SECURITY.md) for the exact boundary.
 
 ## Permission profiles
 
-| Profile | Edits | Commands | Network | Codex sandbox |
+| Profile | Edits | Commands | Network commands | Codex sandbox |
 |---|---|---|---|---|
-| `read-only` | no | limited | no | `read-only` |
-| `safe-edit` (default) | yes | tests/build | no | `workspace-write` |
-| `development` | yes | yes | yes | `workspace-write` |
-| `full-access` | yes | yes | yes | `danger-full-access` |
+| `read-only` | no | limited | approval-gated | `read-only` |
+| `safe-edit` (default) | yes | tests/build | approval-gated | `workspace-write` |
+| `development` | yes | yes | allowed | `workspace-write` |
+| `full-access` | yes | yes | allowed | `danger-full-access` |
+
+The **Network commands** column is a *policy/approval* boundary, **not** an OS-level network
+sandbox: an "approval-gated" profile routes network-*oriented* commands (`curl`, `pip install`,
+`git clone`, …) through an explicit approval — it does not block sockets at the kernel level. The
+**Codex sandbox** column is the flag OpenAgent passes to the Codex CLI, which enforces its own
+sandbox. See [SECURITY.md](SECURITY.md) for the full threat model.
 
 ## Security
 

@@ -3,6 +3,29 @@
 OpenAgent runs AI backends that can read, edit, and execute code on your machine. These are the
 guardrails it enforces, and how to report issues.
 
+## Threat model & scope (read this first)
+
+v0.1 enforces its guardrails at the **policy / approval layer** and through **workspace copies**, not
+through an OS-level sandbox. Concretely:
+
+- There is **no OS-level network namespace or firewall**. A "no-network" profile does not block
+  sockets at the kernel level — it routes network-*oriented* commands (`curl`, `pip install`,
+  `git clone`, …) through **approval**. Once a command is approved, or if an agent runs an
+  allowlisted binary that happens to open a socket, nothing at the OS level prevents that.
+- There is **no OS-level filesystem sandbox** (no chroot/jail/seccomp) around child commands.
+  OpenAgent's *own* filesystem tools (`read_file`, `write_file`, `apply_patch`, …) validate every
+  path to stay inside the workspace and reject traversal/symlink escapes — but that validation does
+  **not** extend to subprocess commands. A shell command runs with its working directory set to the
+  workspace; it can still read or write outside it via absolute paths or `cd`.
+- Isolation of *your* project therefore comes from running the agent in a **git worktree or a
+  directory copy** (see Workspace isolation), not from confining the subprocess.
+- For **CLI agents** (Codex, Claude Code), OpenAgent maps each profile onto that CLI's own
+  sandbox/permission flags (e.g. Codex `--sandbox`). Any real OS sandboxing there is provided and
+  enforced by the CLI, not by OpenAgent.
+
+If you need hard OS-level isolation in v0.1, run OpenAgent inside a container or VM. Real
+cross-platform sandboxing is tracked for a later milestone.
+
 ## Credentials
 
 - API keys are stored in the **OS keychain** by default (via `keyring`). Alternatives: reference an
@@ -34,8 +57,10 @@ Three explicit strategies (`--worktree`):
 - **`none`** — runs directly in your project directory; file-editing agents require **explicit
   confirmation** (`-y`) because there is no isolation.
 
-All tool file paths are validated to stay inside the workspace (path-traversal / symlink escapes are
-rejected).
+OpenAgent's own filesystem tool paths are validated to stay inside the workspace (path-traversal /
+symlink escapes are rejected). **This does not apply to subprocess commands** — an allowlisted or
+approved command runs with its cwd set to the workspace but is not otherwise confined, so isolation
+of your real project comes from the worktree/copy, not from blocking the command.
 
 ## Command policy
 
@@ -48,7 +73,11 @@ denylist:
   tools, a git subset, common read/inspect utilities).
 - **Requires approval** — any executable *not* on the allowlist, shell interpreters (`sh`, `bash`…),
   shell-operator commands (pipes/redirects/subshells), destructive verbs (`rm -rf`, `git reset
-  --hard`, `git clean`, disk-level ops), and network use under a no-network profile.
+  --hard`, `git clean`, disk-level ops), and **network-oriented commands** under a no-network
+  profile (`curl`/`wget`, `pip install`, `npm install`, `git clone/fetch/pull`, …). This is a
+  **policy/approval gate**, not a kernel-level network block: it catches known network-*invoking*
+  commands, and an approved command — or an allowlisted binary that opens its own socket — can still
+  reach the network.
 - **Denied** categorically — `git push`, `npm publish`, `pip/twine upload`, `docker login`, cloud CLI
   logins, `sudo`, reads of `.env` / SSH keys / credentials, and direct keychain access.
 

@@ -99,7 +99,8 @@ _APPROVAL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r">\s*/dev/sd"), "raw device write"),
 ]
 
-# Commands that need network (blocked when the profile disallows network).
+# Network-oriented commands. Under a no-network profile these are gated behind *approval* (a
+# policy boundary), not blocked at the OS level — see SECURITY.md.
 _NETWORK_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\b(curl|wget|nc|ncat|telnet)\b"),
     re.compile(r"\b(pip|pip3)\s+install\b"),
@@ -148,7 +149,7 @@ def evaluate(command: str, *, network_allowed: bool = False) -> PolicyResult:
         for pattern in _NETWORK_PATTERNS:
             if pattern.search(normalized):
                 return PolicyResult(
-                    Decision.APPROVAL, "network access is disabled for this profile", argv=argv,
+                    Decision.APPROVAL, "network-oriented command requires approval for this profile", argv=argv,
                 )
 
     # 4. Destructive but sometimes-legitimate verbs.
