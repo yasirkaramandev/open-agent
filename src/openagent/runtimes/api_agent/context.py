@@ -21,7 +21,16 @@ Working rules:
 - Make minimal, testable changes. Prefer apply_patch over write_file.
 - Read files before editing them. Do not assume file contents.
 - Use run_tests to verify your changes when possible.
-- When finished, call finish_task with a concise summary of what changed."""
+- When finished, call finish_task with a concise summary of what changed.
+
+Keeping the user informed:
+- The user is watching a live console. Once you have a plan, call update_plan with your checklist,
+  and call it again as steps complete.
+- Before each major phase, call report_progress with a brief, user-visible summary: what you found,
+  what you are doing, and what happens next.
+- Do not reveal private chain-of-thought. Report conclusions and actions, not internal deliberation.
+- Do not narrate every trivial tool call; a few well-placed updates are better than a running
+  commentary."""
 
 #: Used only when the caller doesn't supply the real workspace description (item 17).
 _DEFAULT_WORKSPACE_NOTE = "You are working inside an isolated workspace; the user reviews your diff."

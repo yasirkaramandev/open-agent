@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "OpenAgent result.json",
-  "description": "The machine-readable summary of a completed run (spec §35).",
+  "description": "The machine-readable summary of a run (spec §35, item 23). The structured sections (reasoning_summaries, plan, commands, web_searches, files, turn_details) are projected from the run's append-only event log and contain only what the backend itself exposed as user-visible — never hidden chain-of-thought.",
   "type": "object",
   "required": ["run_id", "status", "agent", "turns", "summary", "files_changed", "tests"],
   "properties": {
@@ -10,10 +10,12 @@
       "type": "string",
       "enum": ["completed", "failed", "cancelled", "orphaned"]
     },
+    "phase": { "type": "string" },
     "agent": { "type": "string" },
     "turns": { "type": "integer", "minimum": 1 },
     "summary": { "type": "string" },
     "files_changed": { "type": "array", "items": { "type": "string" } },
+    "failure_type": { "type": ["string", "null"] },
     "tests": {
       "type": "object",
       "properties": {
@@ -30,9 +32,96 @@
         "input_tokens": { "type": ["integer", "null"] },
         "cached_input_tokens": { "type": ["integer", "null"] },
         "output_tokens": { "type": ["integer", "null"] },
+        "reasoning_tokens": { "type": ["integer", "null"] },
         "provider_cost": { "type": ["number", "null"] }
       }
     },
-    "session_id": { "type": ["string", "null"] }
+    "session_id": { "type": ["string", "null"] },
+
+    "reasoning_summaries": {
+      "description": "User-visible reasoning summaries the backend published (Codex `reasoning` items; an API agent's `report_progress`). Never raw chain-of-thought.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["item_id", "text"],
+        "properties": {
+          "item_id": { "type": "string" },
+          "source": { "type": "string" },
+          "turn": { "type": "integer" },
+          "text": { "type": "string" }
+        }
+      }
+    },
+    "plan": {
+      "description": "The agent's final checklist (Codex `todo_list`; an API agent's `update_plan`).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["text", "completed"],
+        "properties": {
+          "text": { "type": "string" },
+          "completed": { "type": "boolean" }
+        }
+      }
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["item_id", "command", "status"],
+        "properties": {
+          "item_id": { "type": "string" },
+          "command": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "in_progress", "completed", "failed", "cancelled"]
+          },
+          "exit_code": { "type": ["integer", "null"] },
+          "turn": { "type": "integer" },
+          "output": { "type": "string" }
+        }
+      }
+    },
+    "web_searches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["item_id", "query"],
+        "properties": {
+          "item_id": { "type": "string" },
+          "query": { "type": "string" },
+          "status": { "type": "string" }
+        }
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "change"],
+        "properties": {
+          "path": { "type": "string" },
+          "change": { "type": "string", "enum": ["created", "modified", "deleted"] },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "in_progress", "completed", "failed", "cancelled"]
+          }
+        }
+      }
+    },
+    "turn_details": {
+      "description": "Per-turn structure. `turns` above remains the integer count, as in status.json.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["number"],
+        "properties": {
+          "number": { "type": "integer", "minimum": 1 },
+          "prompt": { "type": "string" },
+          "status": { "type": "string" },
+          "started_at": { "type": "string" }
+        }
+      }
+    }
   }
 }

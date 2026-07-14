@@ -33,9 +33,11 @@ class PermissionProfile:
     claude_allowed_tools: tuple[str, ...] = field(default_factory=tuple)
 
 
+#: ``update_plan`` / ``report_progress`` publish user-visible progress (item 12). They touch nothing,
+#: so every profile — including read-only — exposes them: transparency is never a privilege.
 _READ_TOOLS = frozenset(
     {"list_files", "read_file", "search_files", "search_text", "git_status", "git_diff",
-     "ask_user", "finish_task"}
+     "ask_user", "update_plan", "report_progress", "finish_task"}
 )
 _EDIT_TOOLS = _READ_TOOLS | {"write_file", "apply_patch"}
 _FULL_TOOLS = _EDIT_TOOLS | {"run_command", "run_tests"}

@@ -88,6 +88,21 @@ ALL_TOOLS: dict[str, Tool] = {
         "ask_user", "Ask the user a clarifying question.",
         _obj({"question": _STR}, ["question"]), control.ask_user,
     ),
+    "update_plan": Tool(
+        "update_plan",
+        "Publish your current plan as a checklist the user can watch. Call it once you have a plan, "
+        "and again as you complete steps. Send the whole checklist each time.",
+        _obj({"items": {"type": "array", "items": _obj({"text": _STR, "completed": _BOOL},
+                                                       ["text"])}}, ["items"]),
+        control.update_plan,
+    ),
+    "report_progress": Tool(
+        "report_progress",
+        "Tell the user, in one or two plain sentences, what you found and what you are doing next. "
+        "Use it before major phases, not for every small step. Never reveal private reasoning.",
+        _obj({"summary": _STR, "next_step": _STR}, ["summary"]),
+        control.report_progress,
+    ),
     "finish_task": Tool(
         "finish_task", "Finish the task with a short summary of what was done.",
         _obj({"summary": _STR}, ["summary"]), control.finish_task,

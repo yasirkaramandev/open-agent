@@ -4,13 +4,19 @@ Whichever runtime did the work, every run directory ends up with the same files 
 (TUI, CLI, other agents via MCP) read one shape:
 
 ``request.json  status.json  events.jsonl  output.md  result.json  logs.txt  changes.diff
-tests.json  handoff.md``
+tests.json  handoff.md  timeline.md``
 
 (``events.jsonl`` is written incrementally by the event log.)
 
+``timeline.md`` is the human-readable narrative of the run (item 23): per turn, the reasoning
+summaries the backend published, the plan as it evolved, the commands, the files, the tests, and the
+final result. ``result.json`` carries the same material in structured form. Neither contains hidden
+chain-of-thought — only what the backend itself exposed as user-visible.
+
 Every artifact is passed through :func:`redact` before it hits disk — including the user prompt in
 ``request.json`` and the ``changes.diff`` (a diff can easily contain a pasted secret). Files are
-written with owner-only permissions where the platform supports it.
+written with owner-only permissions where the platform supports it. Untrusted text (command output,
+model messages) is bounded before it is written.
 """
 
 from __future__ import annotations
@@ -22,9 +28,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..core.models import Run
+from ..core.projection import RunProjection
 from ..credentials.redaction import redact
 
 _IS_WINDOWS = sys.platform.startswith("win")
+
+#: Bounds on untrusted content in the artifact bundle (item 23).
+MAX_OUTPUT_CHARS = 4_000       # per command, in timeline.md
+MAX_TEXT_CHARS = 4_000         # per message / reasoning summary
+MAX_TIMELINE_COMMANDS = 200
 
 
 @dataclass
@@ -82,14 +94,17 @@ class ArtifactWriter:
             "session_id": run.provider_session_id,
         })
 
-    def write_results(self, run: Run, art: RunArtifacts) -> None:
+    def write_results(
+        self, run: Run, art: RunArtifacts, projection: RunProjection | None = None
+    ) -> None:
         status = run.status if isinstance(run.status, str) else run.status.value
         # Scrub free text and the diff before anything hits disk (spec §30).
         art.summary = redact(art.summary)
         art.warnings = [redact(w) for w in art.warnings]
-        self._json("result.json", {
+        result = {
             "run_id": run.id,
             "status": status,
+            "phase": run.phase,
             "agent": run.agent,
             "turns": run.turns,
             "summary": art.summary,
@@ -98,12 +113,20 @@ class ArtifactWriter:
             "warnings": art.warnings,
             "usage": art.usage,
             "session_id": run.provider_session_id,
-        })
+            "failure_type": redact(run.failure_type) if run.failure_type else None,
+        }
+        result.update(_structured(projection))
+        self._json("result.json", result)
         self._json("tests.json", art.tests.to_dict())
         self._text("changes.diff", redact(art.diff))
         self._text("logs.txt", redact("\n".join(art.log_lines)))
         self._text("output.md", redact(_render_output_md(run, art)))
         self._text("handoff.md", redact(_render_handoff_md(run, art)))
+
+    def write_timeline(self, run: Run, projection: RunProjection) -> None:
+        """The narrative of the run: what the agent said, planned, ran, and changed (item 23)."""
+
+        self._text("timeline.md", redact(_render_timeline_md(run, projection)))
 
     def write_turn(
         self, run: Run, prompt: str, art: RunArtifacts,
@@ -186,6 +209,128 @@ def _render_output_md(run: Run, art: RunArtifacts) -> str:
     lines += [f"- {f}" for f in art.files_changed] or ["- (none)"]
     lines.append("")
     return "\n".join(lines)
+
+
+def _structured(projection: RunProjection | None) -> dict:
+    """The structured view of a run for ``result.json`` (item 23).
+
+    Everything here came from the backend's own user-visible stream: reasoning **summaries** (never
+    hidden reasoning), the plan it published, the commands it ran, the searches it made, and the
+    turns it took. All free text is bounded.
+    """
+
+    # ``turns`` stays the integer count (it means the same thing in status.json); the per-turn
+    # structure lives under ``turn_details`` so the two never collide.
+    if projection is None:
+        return {"reasoning_summaries": [], "plan": [], "commands": [], "web_searches": [],
+                "files": [], "turn_details": []}
+    return {
+        "reasoning_summaries": [
+            {"item_id": i.item_id, "source": i.source, "turn": i.turn,
+             "text": i.text[:MAX_TEXT_CHARS]}
+            for i in projection.reasoning if i.text
+        ],
+        "plan": [p.to_dict() for p in projection.plan],
+        "commands": [
+            {"item_id": i.item_id, "command": i.command, "status": i.status,
+             "exit_code": i.exit_code, "turn": i.turn,
+             "output": i.output[:MAX_OUTPUT_CHARS]}
+            for i in projection.commands[:MAX_TIMELINE_COMMANDS]
+        ],
+        "web_searches": [
+            {"item_id": i.item_id, "query": i.query, "status": i.status}
+            for i in projection.web_searches
+        ],
+        "files": [
+            {"path": i.path, "change": i.change, "status": i.status}
+            for i in projection.files
+        ],
+        "turn_details": [
+            {"number": t.number, "prompt": t.prompt[:MAX_TEXT_CHARS], "status": t.status,
+             "started_at": t.started_at}
+            for t in sorted(projection.turns.values(), key=lambda t: t.number)
+        ],
+    }
+
+
+def _render_timeline_md(run: Run, projection: RunProjection) -> str:
+    status = run.status if isinstance(run.status, str) else run.status.value
+    lines = [
+        f"# Timeline — {run.id}", "",
+        f"- Agent: {run.agent}",
+        f"- Status: {status} (phase: {run.phase})",
+        f"- Turns: {run.turns}",
+        f"- Workspace: {run.worktree or run.workspace}",
+        f"- Permission profile: {run.permission_profile}",
+    ]
+    if run.provider_session_id:
+        lines.append(f"- Session: {run.provider_session_id}")
+    if projection.usage:
+        usage = projection.usage
+        lines.append(
+            f"- Usage: in {usage.get('input_tokens', 0)} / cached "
+            f"{usage.get('cached_input_tokens', 0)} / out {usage.get('output_tokens', 0)} / "
+            f"reasoning {usage.get('reasoning_tokens', 0)}"
+        )
+    lines.append("")
+
+    by_turn: dict[int, list] = {}
+    for item in projection.items:
+        by_turn.setdefault(item.turn, []).append(item)
+
+    for number in sorted(by_turn):
+        turn = projection.turns.get(number)
+        lines.append(f"## Turn {number}")
+        lines.append("")
+        if turn and turn.prompt:
+            lines += ["**Prompt**", "", turn.prompt[:MAX_TEXT_CHARS], ""]
+        for item in by_turn[number]:
+            lines += _timeline_entry(item)
+        lines.append("")
+
+    if projection.plan:
+        lines += ["## Final plan", ""]
+        lines += [f"- [{'x' if p.completed else ' '}] {p.text}" for p in projection.plan]
+        lines.append("")
+    if projection.error:
+        err = projection.error
+        lines += ["## Failure", "",
+                  f"- Type: {err.get('error_type')}",
+                  f"- Phase: {err.get('phase') or '(unknown)'}",
+                  f"- Source: {err.get('source')}",
+                  f"- Message: {str(err.get('message'))[:MAX_TEXT_CHARS]}", ""]
+    final = projection.final_message
+    if final:
+        lines += ["## Final response", "", final[:MAX_TEXT_CHARS], ""]
+    return "\n".join(lines)
+
+
+def _timeline_entry(item) -> list[str]:
+    mark = {"completed": "✓", "failed": "✗", "cancelled": "○", "in_progress": "●"}.get(
+        item.status, "•"
+    )
+    if item.kind in ("reasoning", "progress"):
+        label = "Reasoning summary" if item.kind == "reasoning" else "Progress"
+        return [f"- {mark} **{label}**: {item.text[:MAX_TEXT_CHARS]}"]
+    if item.kind == "plan":
+        out = [f"- {mark} **Plan**"]
+        out += [f"    - [{'x' if p.completed else ' '}] {p.text}" for p in item.plan]
+        return out
+    if item.kind == "command":
+        head = f"- {mark} `{item.command}` (exit {item.exit_code})"
+        if not item.output:
+            return [head]
+        body = item.output[:MAX_OUTPUT_CHARS].rstrip()
+        return [head, "", "  ```", *[f"  {line}" for line in body.splitlines()], "  ```"]
+    if item.kind == "file":
+        return [f"- {mark} {item.change} `{item.path}`"]
+    if item.kind == "web_search":
+        return [f"- {mark} Web search: {item.query}"]
+    if item.kind == "tool":
+        return [f"- {mark} Tool `{item.title or item.tool}`"]
+    if item.kind == "message":
+        return [f"- {mark} **Message**: {item.text[:MAX_TEXT_CHARS]}"]
+    return []
 
 
 def _render_handoff_md(run: Run, art: RunArtifacts) -> str:
