@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from openagent.config import Paths, ensure_dirs
+from openagent.runtimes.cli.registry import unregister_cli_adapter
 from openagent.storage.db import Database
 from openagent.storage.repositories import Repositories
 
@@ -72,3 +74,14 @@ def _sandbox_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAGENT_DATA_DIR", str(tmp_path / "xdg-data"))
     monkeypatch.setenv("OPENAGENT_CONFIG_DIR", str(tmp_path / "xdg-config"))
     os.environ.pop("OPENAI_API_KEY", None)
+    # Antigravity's editing bypass is opt-in; a stray env var on the dev machine must not silently
+    # change what the tests are asserting (item 15).
+    os.environ.pop("OPENAGENT_ANTIGRAVITY_EXPERIMENTAL_EDIT", None)
+    os.environ.pop("OPENAGENT_ANTIGRAVITY_DANGEROUS_BYPASS", None)
+
+
+@pytest.fixture(autouse=True)
+def _clean_cli_registry() -> Iterator[None]:
+    """The CLI registry is process-global; drop any fake adapter a test installed into it."""
+    yield
+    unregister_cli_adapter("fake")

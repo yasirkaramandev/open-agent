@@ -16,7 +16,7 @@ from openagent.config import Paths
 from openagent.core.models import RuntimeType
 from openagent.tui.app import OpenAgentTUI
 from openagent.tui.screens.run_view import OutputScreen
-from tests.fakecli import FakeCliAdapter, write_fake_script
+from tests.fakecli import FakeCliAdapter, install_fake_cli, write_fake_script
 
 
 def _git(args, cwd):
@@ -44,8 +44,7 @@ def oa(tmp_path: Path) -> OpenAgentApp:
 @pytest.fixture()
 def use_fake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     adapter = FakeCliAdapter(write_fake_script(tmp_path), mode="complete")
-    monkeypatch.setattr("openagent.services.run_service.build_cli_adapter",
-                        lambda cli, executable=None: adapter)
+    install_fake_cli(monkeypatch, adapter)
     return adapter
 
 

@@ -14,7 +14,7 @@ import pytest
 from openagent.app import OpenAgentApp
 from openagent.config import Paths
 from openagent.core.models import RunStatus, RuntimeType
-from tests.fakecli import FakeCliAdapter, write_fake_script
+from tests.fakecli import FakeCliAdapter, install_fake_cli, write_fake_script
 
 
 def _project(tmp_path: Path, *, git: bool) -> Path:
@@ -45,8 +45,7 @@ def _oa(tmp_path: Path, project: Path) -> OpenAgentApp:
 
 def _wire(monkeypatch, tmp_path, mode, resume_mode):
     adapter = FakeCliAdapter(write_fake_script(tmp_path), mode=mode, resume_mode=resume_mode)
-    monkeypatch.setattr("openagent.services.run_service.build_cli_adapter",
-                        lambda cli, executable=None: adapter)
+    install_fake_cli(monkeypatch, adapter)
 
 
 @pytest.mark.parametrize("git", [False, True])

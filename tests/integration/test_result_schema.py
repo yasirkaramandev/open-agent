@@ -11,7 +11,7 @@ import jsonschema
 from openagent.app import OpenAgentApp
 from openagent.config import Paths
 from openagent.core.models import RunStatus, RuntimeType
-from tests.fakecli import FakeCliAdapter, write_fake_script
+from tests.fakecli import FakeCliAdapter, install_fake_cli, write_fake_script
 
 SCHEMA = json.loads(
     (Path(__file__).resolve().parents[2] / "schemas" / "result.schema.json").read_text()
@@ -44,8 +44,7 @@ async def test_result_json_matches_schema_initial_and_resumed(
     tmp_path: Path, monkeypatch
 ):
     adapter = FakeCliAdapter(write_fake_script(tmp_path), mode="complete", resume_mode="resume")
-    monkeypatch.setattr("openagent.services.run_service.build_cli_adapter",
-                        lambda cli, executable=None: adapter)
+    install_fake_cli(monkeypatch, adapter)
     oa = _app(tmp_path)
 
     run = oa.runs.create(agent_name="fake-coder", prompt="do it", worktree="auto")

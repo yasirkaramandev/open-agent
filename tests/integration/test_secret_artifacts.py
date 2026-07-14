@@ -49,7 +49,7 @@ def app(tmp_path: Path) -> OpenAgentApp:
 
 async def test_no_secret_in_any_artifact(app: OpenAgentApp, httpx_mock: HTTPXMock):
     app.providers.add(name="testco", provider_type="custom", base_url="https://api.test/v1",
-                      api_key="sk-x", store_key=False)
+                      api_key="sk-x")
     register_secret(PREFIXLESS)  # a prefixless provider key active for this run
     app.agents.create(name="a", runtime_type=RuntimeType.API_AGENT, provider="testco",
                       model="m", permission_profile="safe-edit")
@@ -87,11 +87,10 @@ async def test_no_secret_in_any_artifact(app: OpenAgentApp, httpx_mock: HTTPXMoc
 async def test_cli_stderr_secret_is_redacted(app: OpenAgentApp, tmp_path: Path,
                                              monkeypatch: pytest.MonkeyPatch):
     """A secret a CLI writes to stderr must be scrubbed from the failed run's artifacts."""
-    from tests.fakecli import FakeCliAdapter, write_fake_script
+    from tests.fakecli import FakeCliAdapter, install_fake_cli, write_fake_script
 
     adapter = FakeCliAdapter(write_fake_script(tmp_path), mode="leak_stderr")
-    monkeypatch.setattr("openagent.services.run_service.build_cli_adapter",
-                        lambda cli, executable=None: adapter)
+    install_fake_cli(monkeypatch, adapter)
     app.agents.create(name="cli-a", runtime_type=RuntimeType.CLI, cli="fake")
 
     run = app.runs.create(agent_name="cli-a", prompt="go", worktree="auto")

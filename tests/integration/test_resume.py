@@ -10,7 +10,7 @@ import pytest
 from openagent.app import OpenAgentApp
 from openagent.config import Paths
 from openagent.core.models import Run, RunStatus, RuntimeType
-from tests.fakecli import FakeCliAdapter, write_fake_script
+from tests.fakecli import FakeCliAdapter, install_fake_cli, write_fake_script
 
 
 @pytest.fixture()
@@ -40,8 +40,7 @@ def app(tmp_path: Path) -> OpenAgentApp:
 @pytest.fixture()
 def use_fake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeCliAdapter:
     adapter = FakeCliAdapter(write_fake_script(tmp_path), mode="complete", resume_mode="resume")
-    monkeypatch.setattr("openagent.services.run_service.build_cli_adapter",
-                        lambda cli, executable=None: adapter)
+    install_fake_cli(monkeypatch, adapter)
     return adapter
 
 
@@ -74,8 +73,7 @@ async def test_resume_accumulates_turns_and_artifacts(app: OpenAgentApp, use_fak
 async def test_failed_resume_preserves_earlier_artifacts(app: OpenAgentApp, tmp_path: Path,
                                                          monkeypatch: pytest.MonkeyPatch):
     adapter = FakeCliAdapter(write_fake_script(tmp_path), mode="complete", resume_mode="fail1")
-    monkeypatch.setattr("openagent.services.run_service.build_cli_adapter",
-                        lambda cli, executable=None: adapter)
+    install_fake_cli(monkeypatch, adapter)
     run = app.runs.create(agent_name="fake-coder", prompt="first", worktree="auto")
     await app.runs.execute(run)
 
@@ -112,8 +110,7 @@ async def test_successful_resume_clears_prior_failure_type(
 ):
     # First turn fails (but records a session), leaving a failure_type; a successful resume clears it.
     adapter = FakeCliAdapter(write_fake_script(tmp_path), mode="usage_limit", resume_mode="resume")
-    monkeypatch.setattr("openagent.services.run_service.build_cli_adapter",
-                        lambda cli, executable=None: adapter)
+    install_fake_cli(monkeypatch, adapter)
     run = app.runs.create(agent_name="fake-coder", prompt="fail first", worktree="auto")
     failed = await app.runs.execute(run)
     assert failed.status == RunStatus.FAILED
@@ -132,8 +129,7 @@ async def test_success_event_with_nonzero_exit_makes_run_failed(
     """End-to-end: a CLI that emits a success event but exits 1 yields a FAILED run (item 6)."""
 
     adapter = FakeCliAdapter(write_fake_script(tmp_path), mode="success_exit1")
-    monkeypatch.setattr("openagent.services.run_service.build_cli_adapter",
-                        lambda cli, executable=None: adapter)
+    install_fake_cli(monkeypatch, adapter)
     run = app.runs.create(agent_name="fake-coder", prompt="go", worktree="auto")
     result = await app.runs.execute(run)
     assert result.status == RunStatus.FAILED

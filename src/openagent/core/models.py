@@ -191,10 +191,41 @@ class CliInstallation(BaseModel):
     id: str
     type: str  # codex | claude | gemini | agy | ...
     executable: str
+    #: The version actually found on this machine right now.
     version: str | None = None
+    #: The version this adapter's event mapping was captured and verified against. When it differs
+    #: from :attr:`version`, the adapter is "installed but this version is unverified" — never a
+    #: blanket, version-independent "verified" claim (item 16).
+    validated_version: str | None = None
     authenticated: bool | None = None
     adapter: str = ""
     experimental: bool = False
+
+    @property
+    def version_verified(self) -> bool:
+        """Whether the *detected* version is the one the adapter was validated against."""
+
+        if not self.version or not self.validated_version:
+            return False
+        return _normalize_version(self.version) == _normalize_version(self.validated_version)
+
+    @property
+    def verification_label(self) -> str:
+        """An honest, user-facing statement of how far this install is actually verified (item 16)."""
+
+        if not self.validated_version:
+            return "Offline contract tested"
+        if not self.version:
+            return "Installed but version unknown"
+        if self.version_verified:
+            return "Verified live"
+        return "Installed but current version unverified"
+
+
+def _normalize_version(value: str) -> str:
+    """Compare versions on their digits/dots, so 'codex-cli 0.142.5' == '0.142.5'."""
+
+    return "".join(ch for ch in value if ch.isdigit() or ch == ".").strip(".")
 
 
 # --------------------------------------------------------------------------- runs/sessions
@@ -208,6 +239,9 @@ class Run(BaseModel):
     id: str
     agent: str
     status: RunStatus = RunStatus.QUEUED
+    #: Finer-grained lifecycle position than ``status`` (see :class:`~openagent.core.events.RunPhase`):
+    #: preflight → preparing_workspace → starting_backend → running → finalizing → terminal (item 4).
+    phase: str = "queued"
     workspace: str = ""
     worktree: str | None = None
     branch: str | None = None

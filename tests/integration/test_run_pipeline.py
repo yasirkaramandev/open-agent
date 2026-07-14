@@ -42,7 +42,7 @@ def app(tmp_path: Path) -> OpenAgentApp:
 async def test_full_api_run_produces_bundle(app: OpenAgentApp, httpx_mock: HTTPXMock):
     app.providers.add(
         name="testco", provider_type="custom", base_url="https://api.test/v1",
-        api_key="sk-x", store_key=False,
+        api_key="sk-x",
     )
     app.agents.create(
         name="testco-coder", title="Test Coder", runtime_type=RuntimeType.API_AGENT,
@@ -92,7 +92,7 @@ async def test_full_api_run_produces_bundle(app: OpenAgentApp, httpx_mock: HTTPX
 
 async def test_secrets_never_in_artifacts(app: OpenAgentApp, httpx_mock: HTTPXMock):
     app.providers.add(name="testco", provider_type="custom", base_url="https://api.test/v1",
-                      api_key="sk-x", store_key=False)
+                      api_key="sk-x")
     app.agents.create(name="a", runtime_type=RuntimeType.API_AGENT, provider="testco",
                       model="m", permission_profile="safe-edit")
     httpx_mock.add_response(content=_sse(

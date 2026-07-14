@@ -42,7 +42,7 @@ def app(tmp_path: Path) -> OpenAgentApp:
 
 async def test_ask_user_answer_reaches_model_and_is_recorded(app: OpenAgentApp, httpx_mock: HTTPXMock):
     app.providers.add(name="testco", provider_type="custom", base_url="https://api.test/v1",
-                      api_key="sk-x", store_key=False)
+                      api_key="sk-x")
     app.agents.create(name="asker", runtime_type=RuntimeType.API_AGENT,
                       provider="testco", model="test-model", permission_profile="safe-edit")
 
@@ -84,7 +84,7 @@ async def test_ask_user_answer_reaches_model_and_is_recorded(app: OpenAgentApp, 
 
 async def test_ask_user_without_callback_uses_best_judgment(app: OpenAgentApp, httpx_mock: HTTPXMock):
     app.providers.add(name="testco", provider_type="custom", base_url="https://api.test/v1",
-                      api_key="sk-x", store_key=False)
+                      api_key="sk-x")
     app.agents.create(name="asker", runtime_type=RuntimeType.API_AGENT,
                       provider="testco", model="test-model", permission_profile="safe-edit")
 

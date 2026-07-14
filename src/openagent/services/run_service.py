@@ -1,10 +1,23 @@
 """Run orchestration (spec §27, §28, §35, §45).
 
-Ties everything together: allocate a run id, snapshot + create an isolated workspace (per the chosen
-strategy), dispatch to the API loop or a CLI adapter, stream normalized events to ``events.jsonl``
-(+ SQLite index), collect the diff/tests, write the standard artifact bundle, and set the final
-status. PID and session ids are persisted the moment they arrive so a run is recoverable and
-cancellable across restarts.
+Ties everything together: allocate a run id, run **preflight**, snapshot + create an isolated
+workspace (per the chosen strategy), dispatch to the API loop or a CLI adapter, stream normalized
+events to ``events.jsonl`` (+ SQLite index), collect the diff/tests, write the standard artifact
+bundle, and set the final status. PID and session ids are persisted the moment they arrive so a run
+is recoverable and cancellable across restarts.
+
+Lifecycle contract (item 4). Every run emits **exactly one** ``run.started`` — this module's, never
+an adapter's — then zero or more ``run.phase`` transitions::
+
+    queued → preflight → preparing_workspace → starting_backend → running
+           → [waiting_approval | waiting_user] → finalizing → completed | failed | cancelled
+
+…and **exactly one** terminal event. A backend subprocess coming up is a ``process.started`` (with
+its pid), which is a different fact from the run starting.
+
+Failures are persisted, never just warned about (item 13): any runtime exception becomes a
+``run.failed`` carrying a normalized ``error_type``, a redacted message, the phase it failed in, and
+the source — and it lands in ``events.jsonl``, ``status.json``, ``result.json`` and ``output.md``.
 """
 
 from __future__ import annotations
@@ -15,9 +28,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..core.events import EventType, NormalizedEvent
+from ..core.cancellation import CancellationRegistry, RunCancellation, RunCancelled
+from ..core.events import EventType, NormalizedEvent, RunPhase
 from ..core.models import AgentProfile, Run, RunStatus, RuntimeType
 from ..core.permissions import get_profile
+from ..core.projection import RunProjection
 from ..reporting.artifacts import ArtifactWriter, RunArtifacts, TestSummary
 from ..runtimes.api_agent.loop import run_api_agent
 from ..runtimes.cli.base import CliAdapter, CliRunRequest
@@ -28,6 +43,7 @@ from ..storage.event_log import EventLog
 from ..tools.base import AskUserResolver, ToolContext
 from ..tools.registry import ToolExecutor
 from ..workspaces.worktree import NONE, STRATEGIES, WorktreeManager
+from .preflight import PreflightReport, PreflightService
 
 if TYPE_CHECKING:
     from ..app import OpenAgentApp
@@ -40,6 +56,15 @@ _TERMINAL = {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED, RunStat
 
 class RunError(RuntimeError):
     pass
+
+
+class PreflightFailed(RunError):
+    """Preflight found a blocking problem — the run never starts (item 7)."""
+
+    def __init__(self, report: PreflightReport) -> None:
+        super().__init__(report.summary())
+        self.report = report
+        self.error_type = report.error_type
 
 
 def _new_run_id() -> str:
@@ -59,11 +84,14 @@ class RunService:
         self.app = app
         self.repos = app.repos
         self.paths = app.paths
+        self.preflight = PreflightService(app)
         #: Live CLI adapters keyed by run_id, so cancel() reaches the *same* instance that owns the
         #: subprocess (spec §45). Absent after a restart → cancel falls back to PID termination.
         self._cli_adapters: dict[str, CliAdapter] = {}
         #: Runs a cancel was requested for — prevents overwriting ``cancelled`` with ``completed``.
         self._cancelled: set[str] = set()
+        #: The live cancellation flag for each in-flight run — the API loop's stop signal (item 9).
+        self.cancellations = CancellationRegistry()
 
     # ------------------------------------------------------------------ CRUD
 
@@ -108,78 +136,161 @@ class RunService:
         if not agent:
             raise RunError(f"agent {run.agent!r} not found")
 
-        strategy = run.worktree_strategy or "auto"
-        run.status = RunStatus.STARTING
-        self.repos.runs.upsert(run)
-
-        wt = WorktreeManager(self.paths.project_root, self.paths.worktrees_dir)
-        workspace = wt.create(run.id, strategy=strategy)
-        run.worktree = str(workspace.root)
-        run.worktree_strategy = workspace.strategy
-        run.branch = workspace.branch
-        run.base_commit = workspace.base_commit
-        run.is_copy = workspace.is_copy
-        run.in_place = workspace.in_place
-        run.source_path = str(workspace.source)
-        run.baseline_dir = str(workspace.baseline_dir) if workspace.baseline_dir else None
-        run.status = RunStatus.RUNNING
-        self.repos.runs.upsert(run)
+        cancel = self.cancellations.create(run.id)
+        cancel.bind()
 
         run_dir = self.paths.run_dir(run.id)
         event_log = EventLog(run_dir, index=self.repos.event_index)
         writer = ArtifactWriter(run_dir)
         writer.write_request(run)
         art = RunArtifacts()
-        if workspace.lower_safety:
-            art.warnings.append(_lower_safety_warning(workspace))
-
+        projection = RunProjection(run.id)
         state: dict[str, Any] = {"terminal": None}  # RunStatus | None
 
         def sink(event: NormalizedEvent) -> None:
             saved = event_log.append(event)
+            projection.apply(saved)
             _capture(saved, art, run, state)
             self._persist_progress(saved, run)
             if on_event is not None:
                 on_event(saved)
 
-        sink(NormalizedEvent(run_id=run.id, type=EventType.RUN_STARTED, source="openagent",
-                             data={"agent": run.agent, "workspace": str(workspace.root)}))
+        def phase(new: RunPhase, **data: Any) -> None:
+            run.phase = new.value
+            self.repos.runs.upsert(run)
+            sink(NormalizedEvent(run_id=run.id, type=EventType.RUN_PHASE, source="openagent",
+                                 data={"phase": new.value, **data}))
 
+        # The one and only run.started for this run — OpenAgent's, never a backend's (item 4).
+        run.status = RunStatus.STARTING
+        self.repos.runs.upsert(run)
+        sink(NormalizedEvent(
+            run_id=run.id, type=EventType.RUN_STARTED, source="openagent",
+            data={"agent": run.agent, "workspace": run.workspace,
+                  "permission_profile": run.permission_profile,
+                  "worktree_strategy": run.worktree_strategy},
+        ))
+
+        workspace = None
+        wt = WorktreeManager(self.paths.project_root, self.paths.worktrees_dir)
         try:
+            # ---- preflight: prove the agent can run before creating anything (item 7) --------
+            phase(RunPhase.PREFLIGHT)
+            report = await self.preflight.check(
+                agent_name=run.agent, permission_profile=run.permission_profile,
+            )
+            sink(NormalizedEvent(
+                run_id=run.id, type=EventType.LOG, source="openagent",
+                data={"kind": "preflight", "ok": report.ok,
+                      "checks": [c.line() for c in report.checks]},
+            ))
+            for warning in report.warnings:
+                art.warnings.append(f"preflight: {warning.line()}")
+            if not report.ok:
+                raise PreflightFailed(report)
+            cancel.check()
+
+            # ---- workspace ------------------------------------------------------------------
+            phase(RunPhase.PREPARING_WORKSPACE)
+            try:
+                workspace = wt.create(run.id, strategy=run.worktree_strategy or "auto")
+            except Exception as exc:  # noqa: BLE001 - a workspace failure is its own failure type
+                raise _typed(exc, "workspace_failed") from exc
+            run.worktree = str(workspace.root)
+            run.worktree_strategy = workspace.strategy
+            run.branch = workspace.branch
+            run.base_commit = workspace.base_commit
+            run.is_copy = workspace.is_copy
+            run.in_place = workspace.in_place
+            run.source_path = str(workspace.source)
+            run.baseline_dir = str(workspace.baseline_dir) if workspace.baseline_dir else None
+            self.repos.runs.upsert(run)
+            if workspace.lower_safety:
+                art.warnings.append(_lower_safety_warning(workspace))
+            sink(NormalizedEvent(
+                run_id=run.id, type=EventType.WORKSPACE_PREPARED, source="openagent",
+                data={"workspace": str(workspace.root), "strategy": workspace.strategy,
+                      "branch": workspace.branch, "in_place": workspace.in_place},
+            ))
+            cancel.check()
+
+            # ---- backend --------------------------------------------------------------------
+            phase(RunPhase.STARTING_BACKEND)
+            run.status = RunStatus.RUNNING
+            self.repos.runs.upsert(run)
+            phase(RunPhase.RUNNING)
+
             rtype = agent.runtime.type
             if rtype is RuntimeType.API_AGENT or rtype == RuntimeType.API_AGENT.value:
                 await self._run_api(run, agent, workspace.root, sink, art, state,
                                     approval_callback, workspace.describe_for_agent(),
-                                    ask_user_callback)
+                                    ask_user_callback, cancel)
             else:
-                await self._run_cli(run, agent, workspace.root, sink, state)
-        except Exception as exc:  # noqa: BLE001 - convert to a failed run
-            state["terminal"] = RunStatus.FAILED
-            run.failure_type = run.failure_type or "unknown"
-            art.warnings.append(f"runtime error: {exc}")
+                await self._run_cli(run, agent, workspace.root, sink, state, run_dir)
+        except RunCancelled as exc:
+            state["terminal"] = RunStatus.CANCELLED
+            self._cancelled.add(run.id)
+            run.failure_type = "user_cancelled"
+            if state.get("emitted_terminal") is not True:
+                sink(NormalizedEvent(
+                    run_id=run.id, type=EventType.RUN_CANCELLED, source="openagent",
+                    data={"reason": exc.reason, "phase": run.phase},
+                ))
+        except Exception as exc:  # noqa: BLE001 - every runtime error becomes a persisted failure
+            self._fail(run, sink, state, exc)
+        finally:
+            self.cancellations.discard(run.id)
 
-        # Collect diff + changed files from the workspace (works for git worktrees and copies).
-        art.diff = wt.diff(workspace)
-        art.files_changed = wt.changed_files(workspace)
-        run.files_changed = art.files_changed
+        # ---- finalize ---------------------------------------------------------------------
+        run.phase = RunPhase.FINALIZING.value
+        sink(NormalizedEvent(run_id=run.id, type=EventType.RUN_PHASE, source="openagent",
+                             data={"phase": RunPhase.FINALIZING.value}))
+        if workspace is not None:
+            # Collect diff + changed files from the workspace (git worktrees and copies alike).
+            art.diff = wt.diff(workspace)
+            art.files_changed = wt.changed_files(workspace)
+            run.files_changed = art.files_changed
 
         final = self._resolve_final(run, state)
         run.status = final
+        run.phase = final.value if final.value in _PHASE_VALUES else RunPhase.FAILED.value
         run.completed_at = _now()
         if final is RunStatus.COMPLETED:
             run.failure_type = None  # a completed run carries no failure type (item 18)
             if not art.summary:
-                art.summary = "Run completed."
+                art.summary = projection.final_message or "Run completed."
         self.repos.runs.upsert(run)
 
-        # Emit our own terminal event only if the runtime didn't already.
+        # Emit our own terminal event only if the runtime didn't already — exactly one per run.
         if state.get("emitted_terminal") is not True:
             sink(NormalizedEvent(run_id=run.id, type=_terminal_event_type(final), source="openagent",
-                                 data={"status": final.value}))
+                                 data={"status": final.value,
+                                       "error_type": run.failure_type} if final is not RunStatus.COMPLETED
+                                 else {"status": final.value}))
 
         writer.write_status(run)
-        writer.write_results(run, art)
+        writer.write_results(run, art, projection)
+        writer.write_timeline(run, projection)
         return run
+
+    def _fail(self, run: Run, sink: EventHook, state: dict, exc: Exception) -> None:
+        """Persist a runtime exception as a real ``run.failed`` event (item 13).
+
+        The old code only appended a warning to the in-memory artifact bundle and let the run fall
+        into a generic terminal status, so ``events.jsonl`` never recorded *why* it failed. Now the
+        failure is a first-class event with a normalized type, the phase it happened in, and a safe
+        message — and the artifact writers pick it up from there.
+        """
+
+        error_type = getattr(exc, "error_type", None) or _classify_exception(exc)
+        message = str(exc) or exc.__class__.__name__
+        state["terminal"] = RunStatus.FAILED
+        run.failure_type = error_type
+        sink(NormalizedEvent(
+            run_id=run.id, type=EventType.RUN_FAILED, source="openagent",
+            data={"error_type": error_type, "message": message, "phase": run.phase,
+                  "source": "openagent"},
+        ))
 
     def _resolve_final(self, run: Run, state: dict) -> RunStatus:
         """Never silently default an unknown terminal state to completed (spec §43)."""
@@ -196,13 +307,15 @@ class RunService:
         """Persist the run the moment a PID or session id arrives (spec §45 orphan/cancel/resume)."""
 
         etype = event.type if isinstance(event.type, str) else event.type.value
-        if etype in (EventType.RUN_STARTED.value, EventType.SESSION_CREATED.value):
+        if etype in (EventType.RUN_STARTED.value, EventType.PROCESS_STARTED.value,
+                     EventType.SESSION_CREATED.value):
             self.repos.runs.upsert(run)
 
     async def _run_api(self, run, agent, root: Path, sink, art, state,
                        approval_callback: ApprovalCallback | None = None,
                        workspace_note: str = "",
-                       ask_user_callback: AskUserResolver | None = None) -> None:
+                       ask_user_callback: AskUserResolver | None = None,
+                       cancel: RunCancellation | None = None) -> None:
         provider = self.repos.providers.get_by_name(agent.runtime.provider or "")
         if not provider:
             raise RunError(f"provider {agent.runtime.provider!r} not found")
@@ -229,26 +342,40 @@ class RunService:
             outcome = await run_api_agent(
                 run_id=run.id, agent=agent, prompt=run.prompt, adapter=adapter,
                 executor=executor, workspace_root=root, emit=sink, workspace_note=workspace_note,
+                cancellation=cancel,
             )
         finally:
+            # Always release the HTTP transport — on success, failure, and cancellation alike.
             transport = getattr(adapter, "transport", None)
             if transport is not None:
                 await transport.aclose()
 
         art.summary = outcome.summary or art.summary
         art.usage = outcome.usage.model_dump()
+        if outcome.cancelled:
+            raise RunCancelled(outcome.error_message or "cancelled by user")
         if outcome.completed:
             state["terminal"] = RunStatus.COMPLETED
         else:
             state["terminal"] = RunStatus.FAILED
             run.failure_type = outcome.error_type or "unknown"
+            sink(NormalizedEvent(
+                run_id=run.id, type=EventType.RUN_FAILED, source="api-agent",
+                data={"error_type": run.failure_type,
+                      "message": outcome.error_message or "the API agent did not complete",
+                      "phase": run.phase, "source": "api-agent"},
+            ))
 
-    async def _run_cli(self, run, agent: AgentProfile, root: Path, sink, state) -> None:
+    async def _run_cli(self, run, agent: AgentProfile, root: Path, sink, state,
+                       run_dir: Path) -> None:
         adapter = build_cli_adapter(agent.runtime.cli or "")
         self._cli_adapters[run.id] = adapter
         request = CliRunRequest(
             run_id=run.id, prompt=run.prompt, workspace=root,
             permission_profile=run.permission_profile,
+            # Scratch files a CLI needs (Codex's --output-last-message) belong to OpenAgent, not to
+            # the user's project — keep them out of the workspace and out of the diff (item 6).
+            artifacts_dir=run_dir,
         )
         try:
             async for event in adapter.start_run(request):
@@ -291,23 +418,34 @@ class RunService:
 
         adapter = build_cli_adapter(agent.runtime.cli or "")
         self._cli_adapters[run.id] = adapter
+        cancel = self.cancellations.create(run.id)
+        cancel.bind()
         workspace_root = Path(run.worktree or run.workspace)
         request = CliRunRequest(
             run_id=run.id, prompt=prompt, workspace=workspace_root,
             permission_profile=run.permission_profile, session_id=run.provider_session_id,
+            artifacts_dir=run_dir,
         )
+        # The turn boundary: the console groups everything after this under "Turn N" (item 20).
         sink(NormalizedEvent(run_id=run.id, type=EventType.SESSION_RESUMED, source="openagent",
-                             data={"session_id": run.provider_session_id, "turn": run.turns}))
+                             data={"session_id": run.provider_session_id, "turn": run.turns,
+                                   "prompt": prompt}))
+        run.phase = RunPhase.RUNNING.value
+        sink(NormalizedEvent(run_id=run.id, type=EventType.RUN_PHASE, source="openagent",
+                             data={"phase": RunPhase.RUNNING.value, "turn": run.turns}))
         try:
             async for event in adapter.resume_run(run.provider_session_id, prompt, request):
                 sink(event)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - a failed resume is a persisted failure (item 13)
+            error_type = getattr(exc, "error_type", None) or _classify_exception(exc)
             turn_state["terminal"] = RunStatus.FAILED
-            run.failure_type = run.failure_type or "unknown"
+            run.failure_type = error_type
             sink(NormalizedEvent(run_id=run.id, type=EventType.RUN_FAILED, source="openagent",
-                                 data={"message": f"resume error: {exc}"}))
+                                 data={"error_type": error_type, "message": str(exc),
+                                       "phase": run.phase, "source": "openagent"}))
         finally:
             self._cli_adapters.pop(run.id, None)
+            self.cancellations.discard(run.id)
 
         event_end = sum(1 for _ in event_log.read())
         self._finalize_resume(run, prompt, turn_state, turn_art, (event_start, event_end))
@@ -322,6 +460,7 @@ class RunService:
         # Cumulative artifacts: replay the whole event log so earlier turns' work is preserved even
         # if this turn failed (a failed resume must never erase prior successful artifacts).
         art, _ = self._rebuild_artifacts(run)
+        projection = self.projection(run.id)
 
         wt = WorktreeManager(self.paths.project_root, self.paths.worktrees_dir)
         ws = self._reconstruct_workspace(run)
@@ -337,6 +476,7 @@ class RunService:
         else:
             final = turn_state["terminal"]
         run.status = final
+        run.phase = final.value if final.value in _PHASE_VALUES else RunPhase.FAILED.value
         run.completed_at = _now()
         if final is RunStatus.COMPLETED:
             run.failure_type = None  # a successful new turn clears a prior turn's failure (item 18)
@@ -347,7 +487,27 @@ class RunService:
         # turn_NNN.md is scoped to this turn only; result.json is cumulative for the whole run.
         writer.write_turn(run, prompt, turn_art, event_range)
         writer.write_status(run)
-        writer.write_results(run, art)
+        writer.write_results(run, art, projection)
+        writer.write_timeline(run, projection)
+
+    # ------------------------------------------------------------------ replay
+
+    def projection(self, run_id: str) -> RunProjection:
+        """Replay ``events.jsonl`` into the current projected state of a run (item 10).
+
+        This is what lets the Run Console be *closed and reopened* — including for a run that is
+        still going — and what a restarted app uses to show a live run's history before tailing it.
+        """
+
+        projection = RunProjection(run_id)
+        for event in EventLog(self.paths.run_dir(run_id)).read():
+            projection.apply(event)
+        return projection
+
+    def is_live(self, run_id: str) -> bool:
+        """Whether this process is currently executing ``run_id`` (so the console can tail it)."""
+
+        return run_id in self._cli_adapters or self.cancellations.get(run_id) is not None
 
     def _rebuild_artifacts(self, run: Run) -> tuple[RunArtifacts, dict]:
         """Fold the full ``events.jsonl`` back into a cumulative :class:`RunArtifacts`."""
@@ -357,6 +517,7 @@ class RunService:
         event_log = EventLog(self.paths.run_dir(run.id))
         usage_total: dict[str, Any] = {
             "input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0,
+            "reasoning_tokens": 0,
         }
         cost_total: float | None = None
         saw_usage = False
@@ -365,7 +526,8 @@ class RunService:
             etype = event.type if isinstance(event.type, str) else event.type.value
             if etype == EventType.USAGE_UPDATED.value:
                 saw_usage = True
-                for key in ("input_tokens", "cached_input_tokens", "output_tokens"):
+                for key in ("input_tokens", "cached_input_tokens", "output_tokens",
+                            "reasoning_tokens"):
                     usage_total[key] += int(event.data.get(key) or 0)
                 cost = event.data.get("provider_cost")
                 if cost is not None:  # cumulative cost across turns (turn1 + turn2 = total, item 12)
@@ -395,7 +557,20 @@ class RunService:
             is_copy=run.is_copy, in_place=run.in_place, baseline_dir=baseline_dir,
         )
 
-    async def cancel(self, run_id: str) -> None:
+    async def cancel(self, run_id: str, reason: str = "cancelled by user") -> None:
+        """Really stop a run — API and CLI alike (item 9). Idempotent.
+
+        Three paths, in order:
+
+        * **API run in this process** — flip the run's :class:`RunCancellation`. The agent loop sees
+          it at its next checkpoint, abandons the provider stream, stops running tools, and returns
+          ``cancelled``; the executor then writes the single ``run.cancelled``. (Safe to call from a
+          different event loop than the run's — that is the normal case in the TUI.)
+        * **CLI run in this process** — kill the process tree; the running executor finalizes.
+        * **After a restart** — no live controller, so terminate by PID (identity-verified) and
+          finalize the artifacts here.
+        """
+
         run = self.get(run_id)
         if not run:
             return
@@ -403,23 +578,27 @@ class RunService:
             return  # idempotent: already finished
         self._cancelled.add(run_id)
 
+        # An in-process run (API or CLI) has a live cancellation flag: raise it first, so an API
+        # loop stops even though there is no process to kill.
+        signalled = self.cancellations.cancel(run_id, reason)
+
         adapter = self._cli_adapters.get(run_id)
         if adapter is not None:
             # Same process: kill the tree; the running executor will finalize (emit run.cancelled).
             await adapter.cancel(run_id)
-            run.status = RunStatus.CANCELLED
-            run.completed_at = _now()
-            self.repos.runs.upsert(run)
             return
+        if signalled:
+            return  # the API loop owns finalization — do not race it by writing a status here
 
         # Cross-process / after restart: terminate by PID with identity verification, then finalize.
         terminate_pid_tree(run.pid, run.pid_started_at)
         run_dir = self.paths.run_dir(run_id)
         EventLog(run_dir, index=self.repos.event_index).append(
             NormalizedEvent(run_id=run_id, type=EventType.RUN_CANCELLED, source="openagent",
-                            data={"reason": "cancelled by user"})
+                            data={"reason": reason})
         )
         run.status = RunStatus.CANCELLED
+        run.phase = RunPhase.CANCELLED.value
         run.completed_at = _now()
         run.failure_type = run.failure_type or "user_cancelled"
         self.repos.runs.upsert(run)
@@ -468,11 +647,40 @@ class RunService:
         return path.read_text(encoding="utf-8")
 
 
+_PHASE_VALUES = {p.value for p in RunPhase}
+
+
 def _terminal_event_type(status: RunStatus) -> EventType:
     return {
         RunStatus.COMPLETED: EventType.RUN_COMPLETED,
         RunStatus.CANCELLED: EventType.RUN_CANCELLED,
     }.get(status, EventType.RUN_FAILED)
+
+
+def _typed(exc: Exception, error_type: str) -> Exception:
+    """Tag an exception with a normalized failure type so ``_fail`` records the right one."""
+
+    exc.error_type = error_type  # type: ignore[attr-defined]
+    return exc
+
+
+def _classify_exception(exc: Exception) -> str:
+    """Map an unexpected exception onto OpenAgent's normalized failure vocabulary (item 13)."""
+
+    if isinstance(exc, RunCancelled):
+        return "user_cancelled"
+    if isinstance(exc, FileNotFoundError):
+        return "cli_not_found"
+    if isinstance(exc, PermissionError):
+        return "process_start_failed"
+    if isinstance(exc, OSError):
+        return "process_start_failed"
+    text = str(exc).lower()
+    if "provider" in text and "not found" in text:
+        return "provider_not_found"
+    if "credential" in text or "keyring" in text:
+        return "credential_missing"
+    return "unknown"
 
 
 def _lower_safety_warning(workspace) -> str:
@@ -484,9 +692,12 @@ def _lower_safety_warning(workspace) -> str:
 def _capture(event: NormalizedEvent, art: RunArtifacts | None, run: Run, state: dict) -> None:
     etype = event.type if isinstance(event.type, str) else event.type.value
     data = event.data
-    if etype == EventType.RUN_STARTED.value and data.get("pid"):
+    # The PID now arrives on process.started — run.started is OpenAgent's own event and has no pid.
+    if etype == EventType.PROCESS_STARTED.value and data.get("pid"):
         run.pid = data["pid"]
         run.pid_started_at = data.get("create_time") or pid_identity(data["pid"])
+    elif etype == EventType.RUN_PHASE.value and data.get("phase"):
+        run.phase = str(data["phase"])
     elif etype == EventType.SESSION_CREATED.value and data.get("provider_session_id"):
         run.provider_session_id = data["provider_session_id"]
     elif etype == EventType.MESSAGE_COMPLETED.value and data.get("text"):

@@ -46,7 +46,7 @@ def app(tmp_path: Path) -> OpenAgentApp:
                   db_path=tmp_path / "data" / "openagent.db", project_root=project)
     oa = OpenAgentApp(paths)
     oa.providers.add(name="testco", provider_type="custom", base_url="https://api.test/v1",
-                     api_key="sk-x", store_key=False)
+                     api_key="sk-x")
     oa.agents.create(name="a", runtime_type=RuntimeType.API_AGENT, provider="testco",
                      model="m", permission_profile="development")
     return oa

@@ -22,6 +22,7 @@ from openagent.runtimes.cli.base import (
     run_managed_cli,
 )
 from openagent.runtimes.cli.codex import map_codex_event
+from openagent.runtimes.cli.registry import register_cli_adapter
 from openagent.security.process import ManagedProcess, minimal_environment
 
 SOURCE = "fake-cli"
@@ -134,6 +135,26 @@ def write_fake_script(directory: Path) -> Path:
     return path
 
 
+def install_fake_cli(monkeypatch, adapter: FakeCliAdapter) -> FakeCliAdapter:
+    """Register ``adapter`` in the **real** CLI registry for the duration of a test.
+
+    Registering (rather than only monkeypatching ``build_cli_adapter``) means the fake resolves
+    through exactly the path production uses — including run **preflight**, which now refuses to
+    start a run whose CLI is unknown, missing, or unauthenticated. A test that bypassed the registry
+    would also bypass preflight and would no longer prove the pipeline works end to end.
+
+    The same *instance* is handed to both the registry and the executor, so a test can still inspect
+    or cancel it. The registration is removed after every test by the autouse ``_clean_cli_registry``
+    fixture in ``conftest``.
+    """
+
+    register_cli_adapter("fake", lambda executable=None: adapter, display_name="Fake CLI",
+                         status_label="Test fake (offline)")
+    monkeypatch.setattr("openagent.services.run_service.build_cli_adapter",
+                        lambda cli_type, executable=None: adapter)
+    return adapter
+
+
 class FakeCliAdapter:
     """Drives the fake script, mapping its output exactly like the real Codex adapter."""
 
@@ -141,6 +162,9 @@ class FakeCliAdapter:
         self.script = script
         self.mode = mode
         self.resume_mode = resume_mode
+        #: Preflight resolves an adapter's executable through this attribute, exactly as it does for
+        #: the real CLIs — the fake is a real python process, so this is genuinely its executable.
+        self.executable = sys.executable
         self._processes: dict[str, ManagedProcess] = {}
 
     async def detect(self) -> CliInstallation | None:

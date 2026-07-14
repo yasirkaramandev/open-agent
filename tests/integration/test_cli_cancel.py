@@ -16,7 +16,7 @@ from openagent.app import OpenAgentApp
 from openagent.config import Paths
 from openagent.core.models import RunStatus, RuntimeType
 from openagent.security.process import is_pid_alive
-from tests.fakecli import FakeCliAdapter, write_fake_script
+from tests.fakecli import FakeCliAdapter, install_fake_cli, write_fake_script
 
 
 @pytest.fixture()
@@ -37,10 +37,7 @@ def app(tmp_path: Path) -> OpenAgentApp:
 def fake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeCliAdapter:
     script = write_fake_script(tmp_path)
     adapter = FakeCliAdapter(script, mode="longrun")
-    monkeypatch.setattr(
-        "openagent.services.run_service.build_cli_adapter",
-        lambda cli, executable=None: adapter,
-    )
+    install_fake_cli(monkeypatch, adapter)
     return adapter
 
 
@@ -91,8 +88,7 @@ async def test_cancel_is_idempotent(app: OpenAgentApp, fake):
 async def test_completed_run_not_marked_cancelled(app: OpenAgentApp, tmp_path: Path,
                                                   monkeypatch: pytest.MonkeyPatch):
     adapter = FakeCliAdapter(write_fake_script(tmp_path), mode="complete")
-    monkeypatch.setattr("openagent.services.run_service.build_cli_adapter",
-                        lambda cli, executable=None: adapter)
+    install_fake_cli(monkeypatch, adapter)
     run = app.runs.create(agent_name="fake-coder", prompt="quick", worktree="auto")
     result = await app.runs.execute(run)
     assert result.status == RunStatus.COMPLETED
