@@ -148,18 +148,22 @@ class RunService:
         state: dict[str, Any] = {"terminal": None}  # RunStatus | None
 
         def sink(event: NormalizedEvent) -> None:
+            # ``run.phase`` means "the phase *changed*" (item 4). A backend that re-announces the
+            # phase it is already in (Codex sends turn.started for every turn) is not a transition,
+            # so it is dropped rather than written to the log twice.
+            if _is_redundant_phase(event, run):
+                return
             saved = event_log.append(event)
             projection.apply(saved)
-            _capture(saved, art, run, state)
+            _capture(saved, art, run, state)  # this is what advances run.phase
             self._persist_progress(saved, run)
             if on_event is not None:
                 on_event(saved)
 
         def phase(new: RunPhase, **data: Any) -> None:
-            run.phase = new.value
-            self.repos.runs.upsert(run)
             sink(NormalizedEvent(run_id=run.id, type=EventType.RUN_PHASE, source="openagent",
                                  data={"phase": new.value, **data}))
+            self.repos.runs.upsert(run)
 
         # The one and only run.started for this run — OpenAgent's, never a backend's (item 4).
         run.status = RunStatus.STARTING
@@ -242,7 +246,6 @@ class RunService:
             self.cancellations.discard(run.id)
 
         # ---- finalize ---------------------------------------------------------------------
-        run.phase = RunPhase.FINALIZING.value
         sink(NormalizedEvent(run_id=run.id, type=EventType.RUN_PHASE, source="openagent",
                              data={"phase": RunPhase.FINALIZING.value}))
         if workspace is not None:
@@ -430,7 +433,6 @@ class RunService:
         sink(NormalizedEvent(run_id=run.id, type=EventType.SESSION_RESUMED, source="openagent",
                              data={"session_id": run.provider_session_id, "turn": run.turns,
                                    "prompt": prompt}))
-        run.phase = RunPhase.RUNNING.value
         sink(NormalizedEvent(run_id=run.id, type=EventType.RUN_PHASE, source="openagent",
                              data={"phase": RunPhase.RUNNING.value, "turn": run.turns}))
         try:
@@ -508,6 +510,26 @@ class RunService:
         """Whether this process is currently executing ``run_id`` (so the console can tail it)."""
 
         return run_id in self._cli_adapters or self.cancellations.get(run_id) is not None
+
+    def resume_support(self, run: Run) -> tuple[bool, str]:
+        """Can this run take a follow-up turn right now? If not, why not (item 20)?
+
+        Deliberately honest about mid-turn: a non-interactive CLI process cannot be handed new input
+        while it is working, so OpenAgent says "after the current turn completes" instead of
+        pretending a message can be injected.
+        """
+
+        agent = self.repos.agents.get(run.agent)
+        if agent is None:
+            return False, "the agent this run used no longer exists"
+        rtype = agent.runtime.type
+        if rtype not in (RuntimeType.CLI, RuntimeType.CLI.value):
+            return False, "follow-up is supported for CLI backends in v0.1"
+        if _status_value(run) not in {s.value for s in _TERMINAL}:
+            return False, "Follow-up becomes available after the current turn completes."
+        if not run.provider_session_id:
+            return False, "this backend did not report a session id, so it cannot be resumed"
+        return True, ""
 
     def _rebuild_artifacts(self, run: Run) -> tuple[RunArtifacts, dict]:
         """Fold the full ``events.jsonl`` back into a cumulative :class:`RunArtifacts`."""
@@ -650,6 +672,15 @@ class RunService:
 _PHASE_VALUES = {p.value for p in RunPhase}
 
 
+def _is_redundant_phase(event: NormalizedEvent, run: Run) -> bool:
+    """True when a ``run.phase`` event restates the phase the run is already in (item 4)."""
+
+    etype = event.type if isinstance(event.type, str) else event.type.value
+    if etype != EventType.RUN_PHASE.value:
+        return False
+    return str(event.data.get("phase") or "") == run.phase
+
+
 def _terminal_event_type(status: RunStatus) -> EventType:
     return {
         RunStatus.COMPLETED: EventType.RUN_COMPLETED,
@@ -734,3 +765,10 @@ def _capture(event: NormalizedEvent, art: RunArtifacts | None, run: Run, state: 
         state["terminal"] = RunStatus.FAILED
         state["emitted_terminal"] = True
         run.failure_type = data.get("error_type") or run.failure_type or "unknown"
+        if art is not None and not art.error:
+            art.error = {
+                "error_type": run.failure_type,
+                "message": data.get("message") or "",
+                "phase": data.get("phase") or run.phase,
+                "source": data.get("source") or event.source,
+            }

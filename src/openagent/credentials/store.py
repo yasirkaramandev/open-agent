@@ -18,7 +18,7 @@ import subprocess
 from pathlib import Path
 
 from ..core.models import CredentialRef, CredentialType
-from ..security.process import minimal_environment, run_capture
+from ..security.process import OutputLimitExceeded, minimal_environment, run_capture
 
 try:  # keyring is optional at import time so unit tests run without a backend
     import keyring
@@ -95,12 +95,19 @@ class CredentialStore:
         raise CredentialError(f"unknown credential type {ref.type!r}")
 
     def _resolve_external_command(self, ref: CredentialRef) -> str:
-        """Run a user-provided command that prints a secret — sandboxed (spec §30, item 9).
+        """Run a user-provided command that prints a secret — sandboxed (spec §30, items 9, 18).
 
         Hardening: ``shell=False`` with a structured argv, a **minimal environment** (the parent's
         secrets — including other API keys — are not inherited), a strict timeout with whole
-        process-tree termination on expiry, and a stdout size cap. Failures never echo the command's
-        stdout/stderr (which may itself contain the secret) — only a generic reason is surfaced.
+        process-tree termination on expiry, and a **streaming** output cap.
+
+        The cap is a real memory bound, not a post-hoc check (item 18). The previous version read the
+        command to completion and *then* compared the size against the limit — a command printing
+        gigabytes would exhaust memory long before that comparison ran. Output is now read
+        incrementally and the process tree is killed the moment the limit is crossed.
+
+        Failures never echo the command's stdout/stderr (which may itself contain the secret) — only
+        a generic reason is surfaced.
         """
 
         if not ref.command:
@@ -110,7 +117,12 @@ class CredentialStore:
             result = run_capture(
                 argv, cwd=Path.home(), env=minimal_environment(),
                 timeout=CRED_CMD_TIMEOUT_SECONDS, shell=False,
+                max_output_bytes=CRED_CMD_MAX_OUTPUT_BYTES,
             )
+        except OutputLimitExceeded as exc:
+            raise CredentialError(
+                f"credential command output exceeds {CRED_CMD_MAX_OUTPUT_BYTES} bytes"
+            ) from exc
         except subprocess.TimeoutExpired as exc:
             raise CredentialError(
                 f"credential command timed out after {CRED_CMD_TIMEOUT_SECONDS}s"
@@ -123,12 +135,7 @@ class CredentialStore:
             raise CredentialError(
                 f"credential command failed with exit {result.returncode}"
             )
-        out = result.stdout or ""
-        if len(out.encode("utf-8", errors="replace")) > CRED_CMD_MAX_OUTPUT_BYTES:
-            raise CredentialError(
-                f"credential command output exceeds {CRED_CMD_MAX_OUTPUT_BYTES} bytes"
-            )
-        secret = out.strip()
+        secret = (result.stdout or "").strip()
         if not secret:
             raise CredentialError("credential command produced no output")
         return secret

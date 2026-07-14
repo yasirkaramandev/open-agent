@@ -49,8 +49,8 @@ class AgentDetailScreen(Screen):
         )
 
     def action_run(self) -> None:
-        from .run_view import NewRunScreen
-        self.app.push_screen(NewRunScreen(preselect=self.agent_name))
+        from .run_console import RunSetupScreen
+        self.app.push_screen(RunSetupScreen(preselect=self.agent_name))
 
     def action_edit(self) -> None:
         from .edit_agent import EditAgentScreen

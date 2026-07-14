@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
@@ -10,6 +12,7 @@ from textual.widgets import DataTable, Footer, Header, Input, Static
 
 from ...core.models import AgentProfile
 from ...services.provider_service import ProviderInUseError
+from ..markup import safe_line, safe_markup
 
 
 def _runtime_label(a: AgentProfile) -> str:
@@ -134,16 +137,18 @@ class AgentsScreen(Screen):
             panel.update("[dim]no agent selected[/dim]")
             return
         rt = agent.runtime
-        binding = (f"CLI: {rt.cli}" if _runtime_label(agent) == "cli"
-                   else f"Provider: {rt.provider}\nModel: {rt.model}")
+        # Titles, descriptions, tags and system prompts are user-supplied: escape them before they
+        # enter a markup-enabled widget (item 14).
+        binding = (f"CLI: {safe_markup(rt.cli, 40)}" if _runtime_label(agent) == "cli"
+                   else f"Provider: {safe_markup(rt.provider, 40)}\nModel: {safe_markup(rt.model, 60)}")
         panel.update(
-            f"[b]{agent.title or agent.name}[/b]\n"
-            f"[dim]{agent.name}[/dim]\n\n"
+            f"[b]{safe_markup(agent.title or agent.name, 80)}[/b]\n"
+            f"[dim]{safe_markup(agent.name, 60)}[/dim]\n\n"
             f"Runtime: {_runtime_label(agent)}\n{binding}\n"
-            f"Profile: {agent.permission_profile}\n"
-            f"Tags: {', '.join(agent.tags) or '—'}\n\n"
-            f"[b]Description[/b]\n{agent.description or '—'}\n\n"
-            f"[b]System prompt[/b]\n{(agent.system_prompt or '—')[:400]}"
+            f"Profile: {safe_markup(agent.permission_profile, 30)}\n"
+            f"Tags: {safe_markup(', '.join(agent.tags), 120) or '—'}\n\n"
+            f"[b]Description[/b]\n{safe_markup(agent.description, 400) or '—'}\n\n"
+            f"[b]System prompt[/b]\n{safe_markup(agent.system_prompt, 400) or '—'}"
         )
 
     # ------------------------------------------------------------------ actions
@@ -157,8 +162,8 @@ class AgentsScreen(Screen):
     def action_run(self) -> None:
         name = self._selected_name()
         if name:
-            from .run_view import NewRunScreen
-            self.app.push_screen(NewRunScreen(preselect=name))
+            from .run_console import RunSetupScreen
+            self.app.push_screen(RunSetupScreen(preselect=name))
 
     def action_edit(self) -> None:
         name = self._selected_name()
@@ -179,7 +184,7 @@ class AgentsScreen(Screen):
                 self.reload()
 
         self.app.push_screen(
-            ConfirmModal(f"Delete agent [b]{name}[/b]? This also updates OPENAGENT.md.",
+            ConfirmModal(f"Delete agent [b]{safe_markup(name, 60)}[/b]? This also updates OPENAGENT.md.",
                          confirm_label="Delete"),
             callback=done,
         )
@@ -248,7 +253,7 @@ class ProvidersScreen(_TableScreen):
                 self.notify(f"removed provider '{name}'")
                 self.reload()
 
-        self.app.push_screen(ConfirmModal(f"Remove provider [b]{name}[/b]?",
+        self.app.push_screen(ConfirmModal(f"Remove provider [b]{safe_markup(name, 60)}[/b]?",
                                           confirm_label="Remove"), callback=done)
 
     def action_test(self) -> None:
@@ -297,36 +302,72 @@ class CliToolsScreen(_TableScreen):
             table.add_row(label, c.version or "—", c.executable, auth, c.adapter)
 
 
+_ACTIVE_STATUSES = ("queued", "starting", "running", "waiting_approval")
+
+
 class RunsScreen(_TableScreen):
-    title_text = "Runs  ([b]Enter[/b] output · [b]C[/b] cancel)"
+    """Recent runs. Enter opens the Run Console — live for an active run, replayed for a finished
+    one (item 10). A run in flight must never be shown as a completed-only Output screen."""
+
+    title_text = "Runs  ([b]Enter[/b] open console · [b]C[/b] cancel)"
     BINDINGS = _TableScreen.BINDINGS + [
-        Binding("enter", "open_output", "Output"),
+        Binding("enter", "open_console", "Open"),
         Binding("c", "cancel_run", "Cancel"),
     ]
 
     def populate(self, table: DataTable) -> None:
-        table.add_columns("ID", "Agent", "Status", "Turns", "Started", "Files")
-        for r in self.app.oa.runs.list(50):  # type: ignore[attr-defined]
+        table.add_columns("ID", "Agent", "Runtime", "Phase", "Status", "Elapsed", "Activity",
+                          "Files")
+        oa = self.app.oa  # type: ignore[attr-defined]
+        for r in oa.runs.list(50):
             status = r.status if isinstance(r.status, str) else r.status.value
-            table.add_row(r.id, r.agent, status, str(r.turns),
-                          r.started_at.strftime("%m-%d %H:%M"), str(len(r.files_changed)), key=r.id)
+            agent = oa.agents.get(r.agent)
+            runtime = "—"
+            if agent is not None:
+                rt = agent.runtime
+                kind = rt.type if isinstance(rt.type, str) else rt.type.value
+                runtime = (rt.cli or "cli") if kind == "cli" else (rt.model or rt.provider or "api")
+            activity = "—"
+            live = self.app.live_run(r.id)  # type: ignore[attr-defined]
+            if live is not None:
+                activity = live.projection.current_activity
+            elif status in _ACTIVE_STATUSES:
+                activity = r.phase
+            table.add_row(r.id, r.agent, safe_line(runtime, 20), r.phase, status,
+                          _elapsed(r), safe_line(activity, 32), str(len(r.files_changed)), key=r.id)
 
-    def action_open_output(self) -> None:
+    def _selected_run(self) -> str | None:
         table = self.query_one("#table", DataTable)
         if table.row_count == 0:
+            return None
+        return str(table.get_row_at(table.cursor_row)[0])
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        # The focused DataTable consumes Enter before the screen binding ever sees it, so open the
+        # console from the table's own selection message too.
+        self._open_console(str(event.row_key.value or ""))
+
+    def action_open_console(self) -> None:
+        run_id = self._selected_run()
+        if run_id:
+            self._open_console(run_id)
+
+    def _open_console(self, run_id: str) -> None:
+        if not run_id:
             return
-        run_id = str(table.get_row_at(table.cursor_row)[0])
-        from .run_view import OutputScreen
-        self.app.push_screen(OutputScreen(run_id))
+        from .run_console import RunConsoleScreen
+        self.app.push_screen(RunConsoleScreen(run_id))
 
     def action_cancel_run(self) -> None:
-        table = self.query_one("#table", DataTable)
-        if table.row_count == 0:
+        run_id = self._selected_run()
+        if not run_id:
             return
-        run_id = str(table.get_row_at(table.cursor_row)[0])
-        self.run_worker(self._cancel(run_id), exclusive=False)
+        self.app.cancel_active_run(run_id)  # type: ignore[attr-defined]
+        self.notify(f"cancelling {run_id}…")
+        self.set_timer(0.5, self.reload)
 
-    async def _cancel(self, run_id: str) -> None:
-        await self.app.oa.runs.cancel(run_id)  # type: ignore[attr-defined]
-        self.notify(f"cancelled {run_id}")
-        self.reload()
+
+def _elapsed(run) -> str:
+    end = run.completed_at or datetime.now(timezone.utc)
+    seconds = max(0, int((end - run.started_at).total_seconds()))
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"

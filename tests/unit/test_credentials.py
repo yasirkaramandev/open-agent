@@ -110,6 +110,48 @@ def test_external_command_excessive_output_is_rejected():
         store.resolve(_cmd_ref("print('A' * (20 * 1024))"))
 
 
+def test_external_command_endless_output_is_bounded_and_killed(tmp_path: Path):
+    """A command that never stops printing is cut off — the limit is real, not a post-hoc check.
+
+    The old implementation ran the command to completion via ``communicate()`` and only *then*
+    compared the size against the cap, so this producer would have run until it exhausted memory.
+    The bound is now enforced while reading: once the cap is crossed the process tree is killed.
+    The marker proves the producer did not run to completion.
+    """
+
+    marker = tmp_path / "finished.marker"
+    script = (
+        "import sys, pathlib\n"
+        "for _ in range(2_000_000):\n"
+        "    sys.stdout.write('A' * 1024)\n"
+        "    sys.stdout.flush()\n"
+        f"pathlib.Path(r'{marker}').write_text('finished')\n"
+    )
+    store = CredentialStore()
+    start = time.monotonic()
+    with pytest.raises(CredentialError, match="exceeds"):
+        store.resolve(_cmd_ref(script))
+    elapsed = time.monotonic() - start
+
+    assert not marker.exists(), "the endless producer was allowed to run to completion"
+    # ~2 GiB of output would take far longer than this if it were actually being buffered.
+    assert elapsed < 20, f"bounded read took {elapsed:.1f}s — output is not being cut off early"
+
+
+def test_external_command_stderr_flood_is_also_bounded():
+    """The cap covers stderr too — a secret-printing command cannot flood memory through stderr."""
+
+    store = CredentialStore()
+    script = (
+        "import sys\n"
+        "sys.stdout.write('sk-real-key')\n"
+        "for _ in range(200_000):\n"
+        "    sys.stderr.write('B' * 1024)\n"
+    )
+    with pytest.raises(CredentialError, match="exceeds"):
+        store.resolve(_cmd_ref(script))
+
+
 def test_external_command_timeout_is_error(monkeypatch):
     monkeypatch.setattr(store_mod, "CRED_CMD_TIMEOUT_SECONDS", 1)
     store = CredentialStore()

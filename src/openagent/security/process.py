@@ -12,9 +12,11 @@ Responsibilities:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import subprocess
 import sys
+import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
 
@@ -220,6 +222,14 @@ def terminate_pid_tree(
     return True
 
 
+class OutputLimitExceeded(RuntimeError):
+    """A command produced more output than the caller allows; its process tree was killed."""
+
+    def __init__(self, limit: int) -> None:
+        super().__init__(f"command output exceeded {limit} bytes")
+        self.limit = limit
+
+
 def run_capture(
     argv: Sequence[str] | str,
     *,
@@ -227,12 +237,20 @@ def run_capture(
     env: Mapping[str, str],
     timeout: int,
     shell: bool = False,
+    max_output_bytes: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a command to completion in its own process group, capturing text output.
+    """Run a command to completion in its own process group, capturing bounded text output.
 
     On timeout the *whole* process tree is terminated (not just the direct child) and
     :class:`subprocess.TimeoutExpired` is re-raised. ``env`` is used as-is (callers pass a minimal
     environment); the parent environment is never inherited.
+
+    ``max_output_bytes`` is a **real** memory bound (item 18). The previous implementation called
+    ``communicate()`` and only checked the size afterwards — by which point the whole output was
+    already in memory, so a command emitting gigabytes would exhaust the host before the check ever
+    ran. Output is now read incrementally, and the moment the combined total crosses the limit the
+    process tree is killed and :class:`OutputLimitExceeded` is raised. Nothing beyond the limit is
+    ever buffered.
     """
 
     popen = subprocess.Popen(  # noqa: S603 - argv is policy-screened; shell only on approval
@@ -242,21 +260,108 @@ def run_capture(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         stdin=subprocess.DEVNULL,
-        text=True,
+        text=False,  # read bytes: a limit in bytes must be enforced on bytes
         shell=shell,
         start_new_session=not IS_WINDOWS,
     )
-    try:
-        out, err = popen.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        terminate_process_tree(popen.pid)
-        try:
-            popen.communicate(timeout=5.0)
-        except subprocess.TimeoutExpired:  # pragma: no cover - defensive
-            popen.kill()
-        raise
     cmd = argv if shell else list(argv)
-    return subprocess.CompletedProcess(cmd, popen.returncode, out, err)
+    if max_output_bytes is None:
+        try:
+            raw_out, raw_err = popen.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            terminate_process_tree(popen.pid)
+            try:
+                popen.communicate(timeout=5.0)
+            except subprocess.TimeoutExpired:  # pragma: no cover - defensive
+                popen.kill()
+            raise
+        return subprocess.CompletedProcess(
+            cmd, popen.returncode, _decode(raw_out), _decode(raw_err)
+        )
+
+    out, err, exceeded = _read_bounded(popen, timeout=timeout, limit=max_output_bytes)
+    if exceeded:
+        raise OutputLimitExceeded(max_output_bytes)
+    return subprocess.CompletedProcess(cmd, popen.returncode, _decode(out), _decode(err))
+
+
+def _decode(raw: bytes | None) -> str:
+    return (raw or b"").decode("utf-8", errors="replace")
+
+
+def _read_bounded(
+    popen: subprocess.Popen, *, timeout: float, limit: int
+) -> tuple[bytes, bytes, bool]:
+    """Stream a process's stdout/stderr with a hard combined byte cap and a deadline.
+
+    Reads both pipes on threads (portable, including Windows, where ``select`` cannot poll pipes),
+    stopping the instant the cap is crossed. The process tree is terminated on breach *or* timeout,
+    so a runaway producer cannot keep writing into a pipe nobody is draining.
+    """
+
+    import threading
+
+    chunks: dict[str, list[bytes]] = {"out": [], "err": []}
+    total = [0]
+    breached = threading.Event()
+    lock = threading.Lock()
+
+    def pump(name: str, stream) -> None:
+        if stream is None:
+            return
+        try:
+            while True:
+                block = stream.read(4096)
+                if not block:
+                    return
+                with lock:
+                    remaining = limit - total[0]
+                    if remaining <= 0:
+                        breached.set()
+                        return
+                    if len(block) > remaining:
+                        chunks[name].append(block[:remaining])
+                        total[0] = limit
+                        breached.set()
+                        return
+                    chunks[name].append(block)
+                    total[0] += len(block)
+        except (OSError, ValueError):  # pragma: no cover - pipe closed under us on kill
+            return
+        finally:
+            with contextlib.suppress(OSError):
+                stream.close()
+
+    threads = [
+        threading.Thread(target=pump, args=("out", popen.stdout), daemon=True),
+        threading.Thread(target=pump, args=("err", popen.stderr), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+
+    deadline = time.monotonic() + timeout
+    timed_out = False
+    while True:
+        if breached.is_set():
+            break
+        if popen.poll() is not None:
+            break
+        if time.monotonic() >= deadline:
+            timed_out = True
+            break
+        time.sleep(0.02)
+
+    if breached.is_set() or timed_out:
+        terminate_process_tree(popen.pid)
+    for thread in threads:
+        thread.join(timeout=2.0)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        popen.wait(timeout=5.0)
+
+    if timed_out and not breached.is_set():
+        raise subprocess.TimeoutExpired(popen.args, timeout)
+    with lock:
+        return b"".join(chunks["out"]), b"".join(chunks["err"]), breached.is_set()
 
 
 def is_pid_alive(pid: int | None) -> bool:

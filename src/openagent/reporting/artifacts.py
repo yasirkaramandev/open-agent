@@ -61,6 +61,9 @@ class RunArtifacts:
     warnings: list[str] = field(default_factory=list)
     log_lines: list[str] = field(default_factory=list)
     usage: dict = field(default_factory=dict)
+    #: The normalized failure (error_type / message / phase / source) captured from ``run.failed``,
+    #: so the reason a run died reaches output.md and not just the event log (item 13).
+    error: dict = field(default_factory=dict)
 
 
 class ArtifactWriter:
@@ -190,6 +193,16 @@ def _render_output_md(run: Run, art: RunArtifacts) -> str:
     status = run.status if isinstance(run.status, str) else run.status.value
     lines = ["# Run Result", "", "## Summary", "", art.summary or "(no summary)", ""]
     lines += ["## Status", "", f"- Status: {status}", f"- Agent: {run.agent}", f"- Turns: {run.turns}", ""]
+    if status != "completed" and (art.error or run.failure_type):
+        # Why it failed, in the artifact a human opens first (item 13).
+        error = art.error
+        lines += ["## Failure", "",
+                  f"- Type: {error.get('error_type') or run.failure_type}",
+                  f"- Phase: {error.get('phase') or run.phase}",
+                  f"- Source: {error.get('source') or 'openagent'}"]
+        if error.get("message"):
+            lines.append(f"- Message: {str(error['message'])[:MAX_TEXT_CHARS]}")
+        lines.append("")
     if art.warnings:
         lines += ["## Warnings", ""]
         lines += [f"- {w}" for w in art.warnings]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..core.models import CredentialRef, CredentialType, Protocol, ProviderConnection, RemoteModel
@@ -35,6 +36,31 @@ class ProviderInUseError(ValueError):
         super().__init__(
             f"provider {provider!r} is used by agents: {', '.join(self.agents)}"
         )
+
+
+@dataclass
+class SecretRollback:
+    """How to put the OS keychain back exactly as it was, if a transaction fails (item 17).
+
+    The previous code only tracked *whether* it had written a secret where none existed. If a secret
+    already existed under the same account, it was overwritten and — on failure — simply left there:
+    the user's old key was destroyed and replaced by a key belonging to a provider that was never
+    saved. Restoring correctly needs the previous **value**, not a boolean.
+    """
+
+    ref: CredentialRef | None = None
+    previous: str | None = None
+    wrote: bool = False
+
+    def restore(self, credentials) -> None:
+        """Undo the write: put the old secret back verbatim, or remove one that never existed."""
+
+        if not self.wrote or self.ref is None:
+            return
+        if self.previous is None:
+            credentials.delete_secret(self.ref)
+        else:
+            credentials.set_secret(self.ref, self.previous)
 
 
 def resolve_credential(
@@ -94,6 +120,9 @@ class ProviderService:
         self.app = app
         self.repos = app.repos
         self.credentials = app.credentials
+        #: What :meth:`add` wrote to the keychain for each provider, so a later :meth:`rollback` in
+        #: the same transaction can restore the previous value exactly (item 17).
+        self._rollbacks: dict[str, SecretRollback] = {}
 
     def add(
         self,
@@ -121,8 +150,9 @@ class ProviderService:
         * if the key/env-var is missing or 'no key' is illegal for this provider type, it raises
           :class:`ProviderValidationError` and writes nothing to the DB or keychain;
         * the keychain secret is written **before** the provider row, but if the row write fails the
-          freshly written secret is rolled back so a persistence failure can never leave an orphaned
-          key in the OS keychain (item 5). A pre-existing secret is never deleted.
+          keychain is restored **exactly** as it was (item 17): a secret that existed before is put
+          back verbatim, and one that did not is removed. A failed transaction can neither orphan a
+          new key nor destroy an old one.
 
         ``key_env`` references an environment variable instead of storing a secret; ``api_key`` is
         written to the OS keychain. ``credential_source`` (``keychain``/``env``/``none``) makes the
@@ -153,19 +183,19 @@ class ProviderService:
             workspace_id=workspace_id,
             extra_headers=extra_headers or {},
         )
-        wrote_secret = False
+        rollback = SecretRollback()
         if api_key and store_key and credential.type is CredentialType.KEYCHAIN:
-            # Guard against clobbering-then-orphaning a pre-existing secret: only a secret this call
-            # wrote (where none existed) is rolled back on failure.
-            had_secret_before = self.credentials.resolve(credential) is not None
+            # Capture the *value* that was there before, not just whether one was: restoring needs it.
+            rollback = SecretRollback(
+                ref=credential, previous=self.credentials.resolve(credential), wrote=True,
+            )
             self.credentials.set_secret(credential, api_key)
-            wrote_secret = not had_secret_before
         try:
             self.repos.providers.upsert(provider)
         except Exception:
-            if wrote_secret:
-                self.credentials.delete_secret(credential)
+            rollback.restore(self.credentials)
             raise
+        self._rollbacks[provider.name] = rollback
         return provider
 
     def list(self) -> Sequence[ProviderConnection]:
@@ -175,15 +205,24 @@ class ProviderService:
         return self.repos.providers.get_by_name(name)
 
     def rollback(self, provider: ProviderConnection) -> None:
-        """Unconditionally undo a just-created provider (row + any keychain secret).
+        """Undo a just-created provider (row + keychain), restoring the keychain exactly (item 17).
 
-        Used by the atomic create-provider-and-agent transaction (item 3); unlike :meth:`remove`
-        it does **not** run the in-use guard, because the partner agent creation failed and the
-        provider must be removed regardless.
+        Used by the atomic create-provider-and-agent transaction (item 3); unlike :meth:`remove` it
+        does **not** run the in-use guard, because the partner agent creation failed and the provider
+        must be removed regardless.
+
+        It follows the same rule as :meth:`add`: a secret this transaction wrote over is put back,
+        and a secret that existed **before** the transaction is never deleted. Deleting it would
+        destroy a key the user still has another use for, over a failure they did not cause.
         """
 
-        if provider.credential.type is CredentialType.KEYCHAIN:
-            self.credentials.delete_secret(provider.credential)
+        rollback = self._rollbacks.pop(provider.name, None)
+        if rollback is not None:
+            rollback.restore(self.credentials)
+        elif provider.credential.type is CredentialType.KEYCHAIN:
+            # No recorded write (e.g. the provider was created elsewhere): nothing of ours to undo,
+            # so leave the keychain alone rather than deleting a secret we did not write.
+            pass
         self.repos.providers.delete(provider.id)
 
     def agents_using(self, name: str) -> Sequence[str]:

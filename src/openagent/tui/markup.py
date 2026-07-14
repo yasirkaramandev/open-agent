@@ -1,0 +1,56 @@
+"""Escaping for anything the UI did not write itself (item 14).
+
+Rich/Textual widgets with ``markup=True`` interpret ``[...]`` as styling. Every string that reaches
+one of them from *outside* — a model message, a reasoning summary, a question, an answer, a command,
+command output, a tool name, a file path, a provider error, a CLI error, an agent's name or
+description — is attacker- or model-controlled text. Unescaped, it can:
+
+* forge UI: ``[green]✓ tests passed[/green]`` in a model's message renders as a real success line;
+* break rendering: an unclosed ``[/link]`` corrupts everything after it;
+* smuggle control characters into the terminal.
+
+So: one helper, used everywhere, rather than remembering to escape at each call site. Where markup is
+not needed at all, the widget is created with ``markup=False`` instead — that is stronger, and this
+helper is for the places that *do* mix trusted markup with untrusted values.
+"""
+
+from __future__ import annotations
+
+import re
+
+from rich.markup import escape
+
+#: Control characters (including ANSI CSI introducers) that must never reach the terminal. Command
+#: output routinely contains ANSI colour codes; rendered raw they would repaint the console.
+_CONTROL = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+DEFAULT_ELLIPSIS = "…"
+
+
+def strip_control(value: str) -> str:
+    """Remove ANSI escape sequences and other control characters (keeping tab/newline)."""
+
+    return _CONTROL.sub("", value)
+
+
+def safe_markup(value: object, limit: int | None = None) -> str:
+    """Render ``value`` as text that is safe to place inside a markup-enabled widget.
+
+    Escapes Rich markup, strips control/ANSI sequences, and optionally truncates. Use for *every*
+    externally supplied string.
+    """
+
+    if value is None:
+        return ""
+    text = strip_control(str(value))
+    if limit is not None and len(text) > limit:
+        text = text[: max(0, limit - 1)] + DEFAULT_ELLIPSIS
+    return escape(text)
+
+
+def safe_line(value: object, limit: int | None = None) -> str:
+    """Like :func:`safe_markup`, but collapsed to a single line (for tables and one-line labels)."""
+
+    if value is None:
+        return ""
+    return safe_markup(" ".join(str(value).split()), limit)
