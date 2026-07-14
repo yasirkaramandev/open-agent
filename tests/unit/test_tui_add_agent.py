@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from textual.widgets import Button, Input, RadioSet, Select
+from textual.widgets import Button, Input, Label, RadioSet, Select
 
 from openagent.app import OpenAgentApp
 from openagent.config import Paths
@@ -82,7 +82,12 @@ async def _open(pilot) -> AddAgentScreen:
 
 
 async def _pick_radio(pilot, screen, rs_id: str, index: int) -> None:
-    """Select option ``index`` in a RadioSet using only the keyboard (walk + Enter)."""
+    """Select option ``index`` in a RadioSet using only the keyboard (walk + Space).
+
+    **Space** selects; **Enter** advances the wizard (part 19). Enter used to be bound to "toggle",
+    so pressing it on a radio group re-selected the current option and went nowhere.
+    """
+
     rs = screen.query_one(f"#{rs_id}", RadioSet)
     screen.set_focus(rs)
     await pilot.pause()
@@ -93,7 +98,7 @@ async def _pick_radio(pilot, screen, rs_id: str, index: int) -> None:
         await pilot.press(key)
         await pilot.pause()
     if rs.pressed_index != index:
-        await pilot.press("enter")
+        await pilot.press("space")
         await pilot.pause()
     assert rs.pressed_index == index
 
@@ -111,6 +116,10 @@ async def _create(pilot) -> None:
 def _preset_index(name: str) -> int:
     from openagent.providers.factory import preset_names
     return preset_names().index(name)
+
+
+def _cli_index(cli_type: str) -> int:
+    return [e.type for e in _cli_entries()].index(cli_type)
 
 
 # --------------------------------------------------------------------------- Step 1: backend choice
@@ -257,7 +266,15 @@ async def test_api_new_connection_creates_provider_and_agent(tmp_path: Path):
         assert "sk-secret" not in md.read_text()
 
 
-async def test_api_missing_key_creates_nothing_and_shows_error(tmp_path: Path):
+async def test_api_missing_key_is_caught_on_the_connection_step(tmp_path: Path):
+    """A key-required provider with no key must be stopped **where the key is typed** (part 19).
+
+    The wizard used to accept the empty key, walk the user all the way to Agent Details, and only
+    then — during Create — throw them backwards to a step they thought they had finished. The
+    credential is now validated on the connection step itself, by the same rule the service enforces,
+    so the user never advances on an invalid connection.
+    """
+
     oa = _app(tmp_path)
     app = OpenAgentTUI(oa)
     async with app.run_test() as pilot:
@@ -270,10 +287,12 @@ async def test_api_missing_key_creates_nothing_and_shows_error(tmp_path: Path):
         # Leave the API key empty (key-required provider).
         screen.query_one("#model", Input).value = "deepseek-chat"
         await _continue(pilot)
-        screen.query_one("#name", Input).value = "should-not-exist"
-        await _create(pilot)
-        # Stayed in the wizard; nothing persisted; an inline error is shown.
+
+        # Blocked on the connection step, with an inline reason — Agent Details is never reached.
+        assert screen.step == "connection"
+        assert "API key" in str(screen.query_one("#err-conn", Label).content)
         assert isinstance(pilot.app.screen, AddAgentScreen)
+
     assert oa.providers.get("deepseek-main") is None
     assert oa.agents.get("should-not-exist") is None
 
@@ -395,3 +414,139 @@ async def test_action_bar_visible_at_terminal_sizes(tmp_path: Path, size):
         cont = screen.query_one("#continue", Button)
         assert cont.display
         assert 0 < cont.region.bottom <= app.size.height, f"Continue offscreen at {size}"
+
+
+# ======================================================================= part 19 keyboard + hygiene
+
+
+async def test_space_selects_and_enter_advances_on_a_radio_group(tmp_path: Path):
+    """Space selects without moving; Enter advances (part 19).
+
+    Enter used to be bound to "toggle the highlighted option", so pressing it on a radio group
+    re-selected what was already selected and the wizard sat still — there was no keyboard-only way
+    to move on.
+    """
+
+    oa = _app(tmp_path)
+    app = OpenAgentTUI(oa)
+    async with app.run_test() as pilot:
+        screen = await _open(pilot)
+        rs = screen.query_one("#backend", RadioSet)
+        screen.set_focus(rs)
+        await pilot.pause()
+
+        # Walk to "API Model" and press Space: it selects, and we are still on the backend step.
+        await pilot.press("down")
+        await pilot.press("space")
+        await pilot.pause()
+        assert rs.pressed_index == 1
+        assert screen.step == "backend", "Space advanced the wizard; it should only select"
+
+        # Enter advances to the next step.
+        await pilot.press("enter")
+        await pilot.pause()
+        assert screen.step == "provider"
+        assert screen.state.backend_type == "api"
+
+
+async def test_changing_provider_clears_the_api_key_widget_not_just_the_state(tmp_path: Path):
+    """A typed key must not survive a provider change *in the widget* (part 19).
+
+    Clearing only ``state.api_key`` left the secret sitting in the password Input, so the next
+    capture read it straight back and submitted OpenAI's key to DeepSeek.
+    """
+
+    oa = _app(tmp_path)
+    app = OpenAgentTUI(oa)
+    async with app.run_test() as pilot:
+        screen = await _open(pilot)
+        await _pick_radio(pilot, screen, "backend", 1)
+        await _continue(pilot)
+        await _pick_radio(pilot, screen, "provider", _preset_index("deepseek"))
+        await _continue(pilot)
+
+        screen.query_one("#api_key", Input).value = "sk-deepseek-secret"
+        await pilot.pause()
+
+        # Go back and pick a different provider family.
+        screen._go_back()
+        await pilot.pause()
+        await _pick_radio(pilot, screen, "provider", _preset_index("anthropic"))
+        await pilot.pause()
+
+        assert screen.query_one("#api_key", Input).value == "", "the key survived in the widget"
+        assert screen.state.api_key is None
+
+
+async def test_cancel_wipes_the_key_from_the_widget(tmp_path: Path):
+    oa = _app(tmp_path)
+    app = OpenAgentTUI(oa)
+    async with app.run_test() as pilot:
+        screen = await _open(pilot)
+        await _pick_radio(pilot, screen, "backend", 1)
+        await _continue(pilot)
+        await _continue(pilot)  # provider step -> connection step
+        screen.query_one("#api_key", Input).value = "sk-should-be-wiped"
+        await pilot.pause()
+
+        screen._cancel()
+        await pilot.pause()
+        assert screen.state.api_key is None
+
+
+async def test_existing_connections_are_filtered_to_the_provider_family(tmp_path: Path):
+    """An Anthropic card must not offer a DeepSeek connection (part 19)."""
+
+    oa = _app(tmp_path)
+    oa.providers.add(name="deepseek-main", provider_type="deepseek", api_key="sk-x")
+    oa.providers.add(name="claude-main", provider_type="anthropic", api_key="sk-y")
+
+    app = OpenAgentTUI(oa)
+    async with app.run_test() as pilot:
+        screen = await _open(pilot)
+        await _pick_radio(pilot, screen, "backend", 1)
+        await _continue(pilot)
+        await _pick_radio(pilot, screen, "provider", _preset_index("anthropic"))
+        await _continue(pilot)
+
+        # Switch to "use an existing connection".
+        await _pick_radio(pilot, screen, "conn-mode", 1)
+        await pilot.pause()
+
+        options = [value for _, value in screen.query_one("#existing-provider", Select)._options]
+        assert "claude-main" in options
+        assert "deepseek-main" not in options, "an incompatible connection was offered"
+
+
+async def test_max_steps_is_validated_rather_than_silently_defaulted(tmp_path: Path):
+    """5000 steps must be an inline error, not a silent 40 (part 19)."""
+
+    oa = _app(tmp_path)
+    app = OpenAgentTUI(oa)
+    async with app.run_test() as pilot:
+        screen = await _open(pilot)
+        await _pick_radio(pilot, screen, "backend", 0)
+        await _continue(pilot)
+        await _pick_radio(pilot, screen, "cli", _cli_index("codex"))
+        await _continue(pilot)
+
+        screen.query_one("#name", Input).value = "steps-agent"
+        screen.query_one("#max_steps", Input).value = "5000"
+        await _create(pilot)
+
+        assert isinstance(pilot.app.screen, AddAgentScreen), "the agent was created anyway"
+        assert "between 1 and 500" in str(screen.query_one("#err-steps", Label).content)
+    assert oa.agents.get("steps-agent") is None
+
+    # A valid value goes through and is stored verbatim.
+    app = OpenAgentTUI(oa)
+    async with app.run_test() as pilot:
+        screen = await _open(pilot)
+        await _pick_radio(pilot, screen, "backend", 0)
+        await _continue(pilot)
+        await _pick_radio(pilot, screen, "cli", _cli_index("codex"))
+        await _continue(pilot)
+        screen.query_one("#name", Input).value = "steps-agent"
+        screen.query_one("#max_steps", Input).value = "120"
+        await _create(pilot)
+    assert oa.agents.get("steps-agent").max_steps == 120

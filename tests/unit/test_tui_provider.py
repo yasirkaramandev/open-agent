@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from textual.widgets import Input, Select
+from textual.widgets import Input, RadioButton, RadioSet, Select
 
 from openagent.app import OpenAgentApp
 from openagent.config import Paths
@@ -62,14 +62,30 @@ async def test_save_provider_then_available_in_add_agent(tmp_path: Path):
     # Persisted…
     assert oa.providers.get("local-llm") is not None
 
-    # …and immediately selectable in the Add Agent form.
+    # …and immediately selectable in the Add Agent wizard, on the matching provider family.
+    #
+    # The connection list is populated when the user reaches the connection step and is filtered to
+    # the provider family they picked (part 19) — an Ollama connection is offered under Ollama, and
+    # deliberately not under, say, Anthropic.
     app2 = OpenAgentTUI(oa)
     async with app2.run_test() as pilot:
         pilot.app.open_section("add_agent")
         await pilot.pause()
+        await pilot.pause()
         add = pilot.app.screen
         assert isinstance(add, AddAgentScreen)
-        # Saved connections populate the existing-connection selector on the wizard's API path.
+
+        add.state.set_backend("api")
+        add.state.set_provider_type("ollama")
+        add._show_step("connection")
+        await pilot.pause()
+
+        assert add._compatible_connections() == ["local-llm"]
+
+        # Switch to "use an existing connection" the way a user does: press the radio button.
+        conn_mode = add.query_one("#conn-mode", RadioSet)
+        list(conn_mode.query(RadioButton))[1].value = True
+        await pilot.pause()
         provider_values = select_option_values(add.query_one("#existing-provider", Select))
         assert "local-llm" in provider_values
 

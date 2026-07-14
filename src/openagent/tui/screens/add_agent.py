@@ -18,9 +18,11 @@ are shown inline (never a full-screen traceback), while genuine bugs still propa
 from __future__ import annotations
 
 from pydantic import SecretStr
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.message import Message
 from textual.screen import Screen
 from textual.widgets import (
     Button,
@@ -41,9 +43,32 @@ from ...credentials.store import CredentialError
 from ...providers.factory import PRESETS, get_preset, preset_names
 from ...runtimes.cli.registry import CliRegistryEntry, cli_registry_entries
 from ...services.agent_service import AgentError
-from ...services.provider_service import ProviderValidationError
+from ...services.provider_service import ProviderValidationError, resolve_credential
+from ..markup import safe_markup
 from ..select_utils import selected_string
-from ..wizard_state import AddAgentWizardState
+from ..wizard_state import AddAgentWizardState, BackendType
+
+#: A single agent-loop bound. 40 is the default; anything outside this is a mistake, not a preference.
+MIN_STEPS, MAX_STEPS = 1, 500
+
+
+class WizardRadioSet(RadioSet):
+    """A RadioSet where **Space selects** and **Enter advances** the wizard (part 19).
+
+    Textual binds both Space *and* Enter to "toggle the highlighted option", so Enter on a radio
+    group did nothing except re-select what was already selected — the user pressed Enter, the wizard
+    sat still, and there was no way to move on without reaching for the mouse or Tab. Enter is
+    intercepted here (before the binding runs) and turned into "continue".
+    """
+
+    class Advance(Message):
+        """Enter was pressed on a radio group: move to the next wizard step."""
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "enter":
+            event.prevent_default()  # keep RadioSet's own enter->toggle binding from firing
+            event.stop()
+            self.post_message(self.Advance())
 
 try:  # keyring errors are environment-dependent; treat them as expected/recoverable when present
     from keyring.errors import KeyringError as _KeyringError
@@ -115,7 +140,7 @@ class AddAgentScreen(Screen):
             # ---- Step 1: backend category ---------------------------------
             with Vertical(id="step-backend"):
                 yield Static("What do you want to add?", classes="hint")
-                with RadioSet(id="backend"):
+                with WizardRadioSet(id="backend"):
                     yield RadioButton(
                         "CLI Agent — use an installed coding CLI (Codex, Claude Code, Antigravity)",
                         value=True, id="backend-cli",
@@ -129,14 +154,14 @@ class AddAgentScreen(Screen):
             # ---- Step 2A: CLI selection -----------------------------------
             with Vertical(id="step-cli"):
                 yield Static("Choose a CLI Agent", classes="hint")
-                yield RadioSet(id="cli")
+                yield WizardRadioSet(id="cli")
                 yield Static("", id="cli-detail", classes="card")
                 yield Label("", id="err-cli", classes="field-error")
 
             # ---- Step 2B: API provider selection --------------------------
             with Vertical(id="step-provider"):
                 yield Static("Choose an API provider", classes="hint")
-                with RadioSet(id="provider"):
+                with WizardRadioSet(id="provider"):
                     for name in self._preset_values:
                         yield RadioButton(_preset_label(name), value=(name == "openai"),
                                           id=f"preset-{name}")
@@ -145,14 +170,16 @@ class AddAgentScreen(Screen):
             # ---- Step 3B: connection --------------------------------------
             with Vertical(id="step-connection"):
                 yield Static("How should this API be connected?", classes="hint")
-                with RadioSet(id="conn-mode"):
+                with WizardRadioSet(id="conn-mode"):
                     yield RadioButton("Create a new API connection", value=True, id="conn-new-mode")
                     if self._provider_names:
                         yield RadioButton("Use an existing connection", id="conn-existing-mode")
 
                 with Vertical(id="conn-existing"):
                     yield Label("Provider connection")
-                    yield Select([(n, n) for n in self._provider_names], id="existing-provider",
+                    # Populated in _sync_connection_fields, filtered to the selected provider family:
+                    # offering an Anthropic card a `deepseek-main` connection is a guaranteed failure.
+                    yield Select([], id="existing-provider",
                                  allow_blank=True, prompt="select a saved connection")
                     yield Label("", id="err-provider", classes="field-error")
 
@@ -169,7 +196,7 @@ class AddAgentScreen(Screen):
                     yield Label("Workspace ID (when applicable)")
                     yield Input(placeholder="optional", id="workspace_id")
                     yield Label("Credential source")
-                    with RadioSet(id="cred"):
+                    with WizardRadioSet(id="cred"):
                         yield RadioButton("OS keychain", value=True, id="cred-keychain")
                         yield RadioButton("Environment variable", id="cred-env")
                         yield RadioButton("No API key (local provider)", id="cred-none")
@@ -211,6 +238,7 @@ class AddAgentScreen(Screen):
                 yield Select(profiles, value="safe-edit", id="profile", allow_blank=False)
                 yield Label("Maximum steps")
                 yield Input(value="40", id="max_steps")
+                yield Label("", id="err-steps", classes="field-error")
                 yield Label("System prompt (optional)")
                 yield TextArea(id="system_prompt")
             yield Static("", id="error-summary")
@@ -226,7 +254,7 @@ class AddAgentScreen(Screen):
         # Populate the CLI radio from the live registry (install state, version, auth, status).
         self._cli_entries = await cli_registry_entries()
         self._cli_values = [e.type for e in self._cli_entries]
-        cli_set = self.query_one("#cli", RadioSet)
+        cli_set = self.query_one("#cli", WizardRadioSet)
         await cli_set.remove_children()
         for entry in self._cli_entries:
             await cli_set.mount(RadioButton(_cli_button_label(entry), id=f"cli-{entry.type}"))
@@ -329,6 +357,15 @@ class AddAgentScreen(Screen):
         if self.step not in _FINAL_STEPS:
             self.action_continue()
 
+    def on_wizard_radio_set_advance(self, event: WizardRadioSet.Advance) -> None:
+        """Enter on a radio group continues; Space (Textual's own binding) just selects (part 19)."""
+
+        event.stop()
+        if self.step in _FINAL_STEPS:
+            self.action_create()
+        else:
+            self.action_continue()
+
     def action_back_or_cancel(self) -> None:
         if self.step == "backend":
             self._cancel()
@@ -361,9 +398,13 @@ class AddAgentScreen(Screen):
             self._show_step(steps[i - 1])
 
     def _cancel(self) -> None:
-        self.state.clear_secret()
+        self._clear_secret_widget()
         self.state = AddAgentWizardState()
         self.app.pop_screen()
+
+    def on_unmount(self) -> None:
+        # Leaving the screen by any route must not leave a key in a widget or in memory (part 19).
+        self._clear_secret_widget()
 
     # ------------------------------------------------------------------ per-step commit/capture
 
@@ -405,7 +446,7 @@ class AddAgentScreen(Screen):
         if mode == "existing":
             provider = selected_string(self.query_one("#existing-provider", Select))
             if validate and not provider:
-                self._field_error("err-provider", "required")
+                self._field_error("err-provider", "choose a saved connection")
                 return False
             self.state.set_existing_provider(provider or "")
             self.state.model = model
@@ -430,8 +471,33 @@ class AddAgentScreen(Screen):
         self.state.api_key = SecretStr(key) if key else None
         self.state.key_env = self._input("key_env") or None if cred == "env" else None
         self.state.model = model
+
+        if validate and not self._validate_credential(conn_name, cred, key):
+            return False
         if validate and not model:
             self._field_error("err-model", "choose or type a model id")
+            return False
+        return True
+
+    def _validate_credential(self, conn_name: str, cred: str, key: str) -> bool:
+        """Check the credential **on the connection step**, where the user can fix it (part 19).
+
+        The wizard used to accept any credential here and only discover the problem during Create —
+        on the *Agent Details* step — at which point it threw the user backwards to a screen they
+        thought they had finished. The rule is the same one the service enforces
+        (:func:`resolve_credential`), so there is one source of truth and no drift.
+        """
+
+        try:
+            resolve_credential(
+                name=conn_name, provider_type=self.state.provider_type or "custom",
+                api_key=key or None, key_env=self._input("key_env") or None,
+                credential_source=cred,
+            )
+        except ProviderValidationError as exc:
+            field = {"api_key": "err-conn", "key_env": "err-conn"}.get(exc.field, "err-conn")
+            self._field_error(field, str(exc))
+            self._status(f"[red]✗ {safe_markup(str(exc), 200)}[/red]")
             return False
         return True
 
@@ -445,7 +511,15 @@ class AddAgentScreen(Screen):
         self.state.permission_profile = (
             selected_string(self.query_one("#profile", Select)) or "safe-edit"
         )
-        self.state.max_steps = _parse_int(self._input("max_steps"), 40)
+
+        steps, steps_error = _parse_steps(self._input("max_steps"))
+        if validate and steps_error:
+            # An out-of-range or non-numeric value used to be silently replaced with 40 — the user
+            # asked for 5000 steps and got 40 without a word (part 19).
+            self._field_error("err-steps", steps_error)
+            return False
+        self.state.max_steps = steps
+
         if validate and not name:
             self._field_error("err-name", "required")
             return False
@@ -482,7 +556,7 @@ class AddAgentScreen(Screen):
             agent = self._create_with_new_connection(common)
             if agent is None:
                 return
-        s.clear_secret()
+        self._clear_secret_widget()
         self.notify(f"agent '{agent.name}' created — OPENAGENT.md updated", severity="information")
         self.state = AddAgentWizardState()
         self.app.pop_screen()
@@ -519,7 +593,11 @@ class AddAgentScreen(Screen):
     def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
         rid = event.radio_set.id
         if rid == "backend":
-            self.state.set_backend("api" if self._radio_value("#backend", self._backend_values) == "api" else "cli")
+            picked = self._radio_value("#backend", self._backend_values)
+            new_backend: BackendType = "api" if picked == "api" else "cli"
+            if new_backend != self.state.backend_type:
+                self._clear_secret_widget()
+            self.state.set_backend(new_backend)
         elif rid == "cli":
             self._sync_cli_detail()
         elif rid == "provider":
@@ -529,10 +607,14 @@ class AddAgentScreen(Screen):
                 # state and the widgets so nothing stale from the previous provider is submitted.
                 self.state.set_provider_type(new)
                 self._reset_connection_widgets()
+                self._clear_secret_widget()
             self._sync_provider_detail()
         elif rid == "cred":
+            # A different credential source invalidates whatever was typed for the previous one.
+            self._clear_secret_widget()
             self._sync_connection_fields()
         elif rid == "conn-mode":
+            self._clear_secret_widget()
             self._sync_connection_fields()
 
     def on_select_changed(self, event: Select.Changed) -> None:
@@ -550,14 +632,30 @@ class AddAgentScreen(Screen):
         self.query_one("#provider-detail", Static).update(_provider_detail_text(name))
 
     def _reset_connection_widgets(self) -> None:
-        """Clear the connection-step widgets (called when the provider preset changes)."""
+        """Clear the connection-step widgets, **including the password field** (part 19).
+
+        Clearing only ``state.api_key`` left the typed key sitting in the ``#api_key`` Input, so it
+        was re-read on the next capture and submitted against a different provider. The widget and
+        the state are cleared together, always.
+        """
+
         for wid in ("conn_name", "base_url", "region", "workspace_id", "api_key", "key_env", "model"):
             try:
                 self.query_one(f"#{wid}", Input).value = ""
             except Exception:  # pragma: no cover - widget always present
                 pass
         self.query_one("#model_select", Select).set_options([])
+        self.state.api_key = None
         self._status("")
+
+    def _clear_secret_widget(self) -> None:
+        """Wipe the API-key field and the in-memory secret together."""
+
+        try:
+            self.query_one("#api_key", Input).value = ""
+        except Exception:  # pragma: no cover - widget always present
+            pass
+        self.state.clear_secret()
 
     def _sync_connection_fields(self) -> None:
         mode = self._radio_value("#conn-mode", ["new", "existing"]) or "new"
@@ -567,6 +665,36 @@ class AddAgentScreen(Screen):
         cred = self._radio_value("#cred", self._cred_values) or "keychain"
         self.query_one("#key-row").display = is_new and cred == "keychain"
         self.query_one("#env-row").display = is_new and cred == "env"
+        if not is_new:
+            self._populate_existing_connections()
+
+    def _compatible_connections(self) -> list[str]:
+        """Saved connections that belong to the **selected provider family** (part 19).
+
+        Offering an Anthropic provider card a `deepseek-main` connection produced an agent that could
+        not work: the protocol, base URL and key all belong to a different service. The list is
+        filtered to the family the user picked, so an incompatible pairing is not offered at all.
+        """
+
+        oa = self.app.oa  # type: ignore[attr-defined]
+        # The *committed* provider choice wins: by the time the connection step is shown, the family
+        # has been captured into state, and that is what the connection will actually be created for.
+        family = self.state.provider_type or self._radio_value("#provider", self._preset_values)
+        return [p.name for p in oa.providers.list()
+                if not family or p.provider_type == family]
+
+    def _populate_existing_connections(self) -> None:
+        names = self._compatible_connections()
+        select = self.query_one("#existing-provider", Select)
+        select.set_options([(n, n) for n in names])
+        family = self.state.provider_type or "this provider"
+        if names:
+            self._field_error("err-provider", "")
+        else:
+            self._field_error(
+                "err-provider",
+                f"no saved connection for {family} — create a new one instead",
+            )
 
     def _render_cli_runtime_info(self) -> None:
         entry = self._entry_for(self.state.cli_type)
@@ -681,7 +809,7 @@ class AddAgentScreen(Screen):
         self.query_one(f"#{wid}", Label).update(f"✗ {message}" if message else "")
 
     def _clear_errors(self) -> None:
-        for wid in ("err-name", "err-cli", "err-provider", "err-conn", "err-model"):
+        for wid in ("err-name", "err-cli", "err-provider", "err-conn", "err-model", "err-steps"):
             self.query_one(f"#{wid}", Label).update("")
         self.query_one("#error-summary", Static).update("")
 
@@ -742,8 +870,16 @@ def _provider_detail_text(name: str | None) -> str:
     )
 
 
-def _parse_int(value: str, default: int) -> int:
+def _parse_steps(value: str) -> tuple[int, str]:
+    """Parse ``max_steps``. Returns ``(steps, error)``; an invalid value is never silently accepted."""
+
+    text = (value or "").strip()
+    if not text:
+        return 40, ""
     try:
-        return int(value)
+        steps = int(text)
     except (TypeError, ValueError):
-        return default
+        return 40, f"must be a whole number between {MIN_STEPS} and {MAX_STEPS}"
+    if not (MIN_STEPS <= steps <= MAX_STEPS):
+        return 40, f"must be between {MIN_STEPS} and {MAX_STEPS}"
+    return steps, ""
