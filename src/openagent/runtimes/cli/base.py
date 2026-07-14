@@ -43,6 +43,9 @@ class CliRunRequest:
     #: ``--output-last-message``) puts it **here**, never in the workspace, so it can never show up
     #: in the project diff (item 6). ``None`` → the adapter falls back to a temp file.
     artifacts_dir: Path | None = None
+    #: Pin the model a CLI backend should use. ``None`` → the CLI's own configured default. This is
+    #: how a Codex agent avoids inheriting a ~/.codex/config.toml model its installed CLI cannot run.
+    model: str | None = None
 
 
 @dataclass

@@ -126,9 +126,16 @@ class CodexAdapter:
     def resume_run(
         self, session_id: str, prompt: str, request: CliRunRequest
     ) -> AsyncIterator[NormalizedEvent]:
+        # Argument order matters and is not symmetric with `exec`: `resume` is a *subcommand* of
+        # `codex exec`, and clap requires exec's options **before** it —
+        #     codex exec [OPTIONS] resume <SESSION_ID> [PROMPT]
+        # Passing them after the subcommand (as this adapter used to) makes the real CLI exit 2 with
+        # "unexpected argument '--sandbox' found". Resume therefore never worked against a real Codex;
+        # only the argv-ignoring test fake made it look like it did.
         args = [
-            self.executable or "codex", "exec", "resume", session_id,
-            *self._common_args(request), prompt,
+            self.executable or "codex", "exec",
+            *self._common_args(request),
+            "resume", session_id, prompt,
         ]
         return self._drive(request, args)
 
@@ -147,6 +154,10 @@ class CodexAdapter:
             "-c", f"model_reasoning_summary={REASONING_SUMMARY_MODE}",
             "-o", str(self._final_message_path(request)),
         ]
+        if request.model:
+            # Without this an agent inherits whatever ~/.codex/config.toml names, which may be a
+            # model the installed CLI cannot run at all (seen live: "requires a newer version").
+            args += ["-m", request.model]
         # A 'copy' worktree is a plain directory, not a git repo; Codex refuses to run outside one
         # unless told otherwise. Only relax the check where it genuinely does not apply.
         if not (request.workspace / ".git").exists():

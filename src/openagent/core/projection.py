@@ -2,7 +2,7 @@
 
 ``events.jsonl`` is append-only: an item that changes (a plan being ticked off, a command finishing,
 a patch failing) produces a *new* event rather than rewriting an old one. Readers therefore need a
-projection: fold the event stream into "what is true now", keyed by ``(source, item_id)``.
+projection: fold the event stream into "what is true now", keyed by ``(source, turn, item_id)``.
 
 One projection serves three consumers, so they can never disagree:
 
@@ -49,7 +49,11 @@ class PlanItem:
 class Item:
     """One addressable thing the agent did, projected to its latest state."""
 
-    key: tuple[str, str]  # (source, item_id)
+    #: ``(source, turn, item_id)``. The **turn** is part of the key because a backend may restart its
+    #: item numbering each turn — Codex does: turn 2's first message is ``item_0`` again. Keyed only
+    #: by ``(source, item_id)``, turn 2's answer would overwrite turn 1's card instead of appearing
+    #: as a new one, and the console would show a single turn that mysteriously changed its mind.
+    key: tuple[str, int, str]
     kind: str  # reasoning | progress | plan | command | file | tool | web_search | message
     status: str = ItemStatus.IN_PROGRESS.value
     title: str = ""
@@ -68,7 +72,7 @@ class Item:
 
     @property
     def item_id(self) -> str:
-        return self.key[1]
+        return self.key[2]
 
     @property
     def source(self) -> str:
@@ -102,7 +106,7 @@ class TurnView:
     prompt: str = ""
     started_at: str = ""
     status: str = ""
-    item_keys: list[tuple[str, str]] = field(default_factory=list)
+    item_keys: list[tuple[str, int, str]] = field(default_factory=list)
 
 
 class RunProjection:
@@ -130,8 +134,8 @@ class RunProjection:
         self.tests: dict[str, Any] = {}
         self.files_changed: list[str] = []
 
-        self._items: dict[tuple[str, str], Item] = {}
-        self._order: list[tuple[str, str]] = []
+        self._items: dict[tuple[str, int, str], Item] = {}
+        self._order: list[tuple[str, int, str]] = []
         self._seq = 0
         self._anon = 0
         self.turns: dict[int, TurnView] = {1: TurnView(number=1)}
@@ -220,14 +224,14 @@ class RunProjection:
     # ------------------------------------------------------------------ internals
 
     def _touch(self, event: NormalizedEvent, kind: str) -> Item:
-        """Find (or create) the item this event addresses, keyed by ``(source, item_id)``."""
+        """Find (or create) the item this event addresses, keyed by ``(source, turn, item_id)``."""
 
         item_id = str(event.data.get("item_id") or "")
         if not item_id:
             # An adapter that doesn't itemize (or a one-shot event) still gets a stable slot.
             self._anon += 1
             item_id = f"_{kind}_{self._anon}"
-        key = (event.source, item_id)
+        key = (event.source, self.turn, item_id)
         item = self._items.get(key)
         if item is None:
             self._seq += 1

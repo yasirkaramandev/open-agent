@@ -379,6 +379,7 @@ class RunService:
             # Scratch files a CLI needs (Codex's --output-last-message) belong to OpenAgent, not to
             # the user's project — keep them out of the workspace and out of the diff (item 6).
             artifacts_dir=run_dir,
+            model=agent.runtime.model or None,
         )
         try:
             async for event in adapter.start_run(request):
@@ -427,7 +428,7 @@ class RunService:
         request = CliRunRequest(
             run_id=run.id, prompt=prompt, workspace=workspace_root,
             permission_profile=run.permission_profile, session_id=run.provider_session_id,
-            artifacts_dir=run_dir,
+            artifacts_dir=run_dir, model=agent.runtime.model or None,
         )
         # The turn boundary: the console groups everything after this under "Turn N" (item 20).
         sink(NormalizedEvent(run_id=run.id, type=EventType.SESSION_RESUMED, source="openagent",

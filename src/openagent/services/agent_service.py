@@ -63,7 +63,14 @@ class AgentService:
                 raise AgentError(f"provider {provider!r} does not exist")
         elif runtime_type is RuntimeType.CLI:
             cli = _require_str(cli, "CLI agent requires a valid CLI selection")
-            provider = model = None
+            provider = None
+            # A CLI agent MAY pin a model (``codex -m`` / ``claude --model``). It is optional —
+            # ``None`` means "use the CLI's own configured default" — but it is not meaningless:
+            # without it the agent inherits whatever ``~/.codex/config.toml`` names, which may be a
+            # model the installed CLI cannot run at all (observed live: "requires a newer version
+            # of Codex"). Pinning it makes the agent reproducible instead of dependent on global
+            # config the user may not even remember setting.
+            model = (model or "").strip() or None
         if self.repos.agents.get(name):
             raise AgentError(f"agent {name!r} already exists")
 

@@ -174,3 +174,36 @@ def test_items_from_different_sources_do_not_collide():
     projection.apply(_event(EventType.MESSAGE_COMPLETED, source="api-agent", item_id="item_0",
                             text="from the api agent"))
     assert len(projection.messages) == 2
+
+
+# --------------------------------------------------------------------------- turns
+
+
+def test_a_backend_that_restarts_item_ids_each_turn_does_not_overwrite_turn_1():
+    """Codex numbers items from item_0 again on every turn — the turn must be part of the key.
+
+    Found by a real resume: turn 2's answer ("84") arrived as `item_0`, exactly like turn 1's ("42").
+    Keyed only by (source, item_id) the projection treated them as the *same* card, so turn 1's
+    answer was silently overwritten and the console showed a single turn that had changed its mind.
+    """
+
+    projection = RunProjection("run_1")
+    projection.apply(_event(EventType.MESSAGE_COMPLETED, item_id="item_0", text="42"))
+    projection.apply(NormalizedEvent(
+        run_id="run_1", type=EventType.SESSION_RESUMED, source="openagent",
+        data={"turn": 2, "session_id": "th-1", "prompt": "double it"},
+    ))
+    projection.apply(_event(EventType.MESSAGE_COMPLETED, item_id="item_0", text="84"))
+
+    messages = projection.messages
+    assert [m.text for m in messages] == ["42", "84"]
+    assert [m.turn for m in messages] == [1, 2]
+    assert projection.final_message == "84"
+
+
+def test_within_one_turn_the_same_item_id_still_projects_onto_one_card():
+    projection = RunProjection("run_1")
+    projection.apply(_event(EventType.COMMAND_STARTED, item_id="item_2", command="pytest"))
+    projection.apply(_event(EventType.COMMAND_COMPLETED, item_id="item_2", command="pytest",
+                            exit_code=0))
+    assert len(projection.commands) == 1

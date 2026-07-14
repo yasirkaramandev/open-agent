@@ -73,6 +73,8 @@ class ClaudeAdapter:
             self.executable or "claude", "-p", prompt if prompt is not None else request.prompt,
             "--output-format", "stream-json", "--verbose", "--include-partial-messages",
         ]
+        if request.model:
+            args += ["--model", request.model]
         if profile.claude_allowed_tools:
             args += ["--allowedTools", ",".join(profile.claude_allowed_tools)]
         if profile.claude_permission_mode:

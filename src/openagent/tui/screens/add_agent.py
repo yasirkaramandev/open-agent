@@ -219,7 +219,16 @@ class AddAgentScreen(Screen):
                 yield Static("", id="conn-status")
 
             # ---- Step 3A final info (CLI) ---------------------------------
-            yield Static("", id="cli-runtime-info", classes="card")
+            with Vertical(id="cli-model-row"):
+                yield Static("", id="cli-runtime-info", classes="card")
+                yield Label("Model (optional)")
+                yield Static(
+                    "Leave blank to use the CLI's own configured default. Pinning a model makes the "
+                    "agent reproducible — an unset model inherits the CLI's global config, which may "
+                    "name a model this CLI version cannot run.",
+                    classes="hint",
+                )
+                yield Input(placeholder="e.g. gpt-5.5", id="cli_model")
             # ---- Step 4B final info (API) ---------------------------------
             yield Static("", id="api-summary", classes="card")
 
@@ -279,7 +288,7 @@ class AddAgentScreen(Screen):
         self.step = step
         for sid in ("step-backend", "step-cli", "step-provider", "step-connection"):
             self.query_one(f"#{sid}").display = False
-        self.query_one("#cli-runtime-info").display = False
+        self.query_one("#cli-model-row").display = False
         self.query_one("#api-summary").display = False
         self.query_one("#common-fields").display = False
 
@@ -295,7 +304,7 @@ class AddAgentScreen(Screen):
             self.query_one("#step-connection").display = True
             self._sync_connection_fields()
         elif step == "cli_config":
-            self.query_one("#cli-runtime-info").display = True
+            self.query_one("#cli-model-row").display = True
             self.query_one("#common-fields").display = True
             self._render_cli_runtime_info()
         elif step == "api_config":
@@ -436,6 +445,8 @@ class AddAgentScreen(Screen):
         if step == "connection":
             return self._capture_connection(validate=validate)
         if step in ("cli_config", "api_config"):
+            if step == "cli_config":
+                self.state.model = self._input("cli_model") or None
             return self._capture_common(validate=validate)
         return True
 
@@ -532,6 +543,8 @@ class AddAgentScreen(Screen):
             return
         self._clear_errors()
         try:
+            if self.step == "cli_config":
+                self.state.model = self._input("cli_model") or None
             if not self._capture_common(validate=True):
                 return
             self._create()
@@ -548,7 +561,7 @@ class AddAgentScreen(Screen):
         }
         if s.backend_type == "cli":
             agent = oa.agents.create(name=s.agent_name, runtime_type=RuntimeType.CLI,
-                                     cli=s.cli_type, **common)
+                                     cli=s.cli_type, model=s.model, **common)
         elif s.provider_mode == "existing":
             agent = oa.agents.create(name=s.agent_name, runtime_type=RuntimeType.API_AGENT,
                                      provider=s.provider_name, model=s.model, **common)

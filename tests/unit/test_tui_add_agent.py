@@ -157,7 +157,7 @@ async def test_backend_api_then_continue_shows_provider_cards(tmp_path: Path):
         assert screen.query_one("#step-provider").display is True
         # CLI configuration is not shown on the API path.
         assert screen.query_one("#step-cli").display is False
-        assert screen.query_one("#cli-runtime-info").display is False
+        assert screen.query_one("#cli-model-row").display is False
 
 
 # --------------------------------------------------------------------------- CLI path: create

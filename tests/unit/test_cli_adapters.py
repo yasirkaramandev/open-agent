@@ -210,3 +210,82 @@ def test_claude_result_conflicting_error_subtype_but_is_error_false_fails():
 
 def test_claude_result_empty_object_fails():
     assert _result_type({}) == "run.failed"
+
+
+# --------------------------------------------------------------------------- codex argv contract
+
+
+def test_codex_resume_puts_options_before_the_subcommand(tmp_path):
+    """`resume` is a subcommand of `codex exec`, so exec's options must precede it.
+
+    Found by running the real CLI: the old order
+        codex exec resume <id> --json --sandbox … <prompt>
+    made codex-cli 0.142.5 exit 2 with "unexpected argument '--sandbox' found". Resume had therefore
+    never worked against a real Codex — only the argv-ignoring test fake made it look like it did.
+    """
+
+    from openagent.runtimes.cli.base import CliRunRequest
+    from openagent.runtimes.cli.codex import CodexAdapter
+
+    adapter = CodexAdapter(executable="/usr/local/bin/codex")
+    request = CliRunRequest(run_id="r", prompt="second turn", workspace=tmp_path,
+                            permission_profile="read-only", artifacts_dir=tmp_path)
+    args = [
+        "/usr/local/bin/codex", "exec",
+        *adapter._common_args(request),
+        "resume", "sess-1", "second turn",
+    ]
+
+    resume_at = args.index("resume")
+    assert args.index("--json") < resume_at
+    assert args.index("--sandbox") < resume_at
+    assert args.index("-o") < resume_at
+    # …and the session id and prompt are positional arguments *after* it.
+    assert args[resume_at + 1:] == ["sess-1", "second turn"]
+
+
+def test_codex_pins_the_model_when_the_agent_specifies_one(tmp_path):
+    """An unpinned agent inherits ~/.codex/config.toml — which may name an unusable model."""
+
+    from openagent.runtimes.cli.base import CliRunRequest
+    from openagent.runtimes.cli.codex import CodexAdapter
+
+    adapter = CodexAdapter(executable="codex")
+    pinned = adapter._common_args(CliRunRequest(
+        run_id="r", prompt="p", workspace=tmp_path, artifacts_dir=tmp_path, model="gpt-5.5",
+    ))
+    assert pinned[pinned.index("-m") + 1] == "gpt-5.5"
+
+    unpinned = adapter._common_args(CliRunRequest(
+        run_id="r", prompt="p", workspace=tmp_path, artifacts_dir=tmp_path,
+    ))
+    assert "-m" not in unpinned
+
+
+def test_codex_requests_reasoning_summaries(tmp_path):
+    """Codex emits no reasoning items unless summaries are asked for — verified live."""
+
+    from openagent.runtimes.cli.base import CliRunRequest
+    from openagent.runtimes.cli.codex import CodexAdapter
+
+    args = CodexAdapter(executable="codex")._common_args(
+        CliRunRequest(run_id="r", prompt="p", workspace=tmp_path, artifacts_dir=tmp_path)
+    )
+    assert "model_reasoning_summary=detailed" in args
+
+
+def test_codex_final_message_file_is_outside_the_workspace(tmp_path):
+    """`-o` must not point into the workspace, or it shows up in the user's diff (item 6)."""
+
+    from openagent.runtimes.cli.base import CliRunRequest
+    from openagent.runtimes.cli.codex import CodexAdapter
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    artifacts = tmp_path / "run"
+    args = CodexAdapter(executable="codex")._common_args(
+        CliRunRequest(run_id="r", prompt="p", workspace=workspace, artifacts_dir=artifacts)
+    )
+    final = Path(args[args.index("-o") + 1])
+    assert artifacts in final.parents
+    assert workspace not in final.parents
