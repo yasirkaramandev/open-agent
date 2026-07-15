@@ -119,6 +119,51 @@ def cli_install_status() -> list[tuple[str, bool]]:
     return status
 
 
+@dataclass
+class CliModelDiscovery:
+    """Result of trying to enumerate a CLI's selectable models (Phase 4).
+
+    ``available`` is the honest signal: ``False`` means the installed CLI cannot list models (or the
+    attempt failed) — the wizard then keeps the manual-id and "use the CLI's own default" paths open
+    rather than pretending an empty or fabricated list is authoritative.
+    """
+
+    cli_type: str
+    available: bool
+    models: list[str]
+    method: str = ""
+    error: str | None = None
+
+
+async def discover_cli_models(cli_type: str, executable: str | None = None) -> CliModelDiscovery:
+    """Discover a CLI's models via its own real command — never a hard-coded guess (Phase 4).
+
+    The single adapter-level contract: an adapter that can enumerate models offline exposes an async
+    ``list_models()`` (Antigravity does, via ``agy models``). Codex and Claude Code expose a
+    ``--model`` flag but no listing command, so discovery is reported ``available=False`` with an
+    actionable message — the wizard falls back to a manual id or the CLI's configured default, and
+    never labels an unverified manual choice as "verified".
+    """
+
+    try:
+        adapter = build_cli_adapter(cli_type, executable)
+    except KeyError as exc:
+        return CliModelDiscovery(cli_type, False, [], "", str(exc))
+    lister = getattr(adapter, "list_models", None)
+    method = str(getattr(adapter, "model_discovery_method", "") or "")
+    if lister is None:
+        return CliModelDiscovery(
+            cli_type, False, [], "",
+            f"automatic model discovery is unavailable for {cli_display_name(cli_type)}; "
+            "type a model id manually, or leave it blank to use the CLI's own default",
+        )
+    try:
+        models = await lister()
+    except Exception as exc:  # noqa: BLE001 - discovery is best-effort; surface the real reason
+        return CliModelDiscovery(cli_type, False, [], method, str(exc))
+    return CliModelDiscovery(cli_type, True, list(models), method)
+
+
 async def cli_registry_entries() -> list[CliRegistryEntry]:
     """Resolve every known CLI against this machine — the catalog the Add-Agent wizard renders.
 

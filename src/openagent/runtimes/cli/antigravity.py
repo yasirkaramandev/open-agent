@@ -38,7 +38,9 @@ silently cannot do what was asked.
 
 from __future__ import annotations
 
+import asyncio
 import os
+import subprocess
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -81,6 +83,21 @@ class AntigravityPermissionError(RuntimeError):
 
 def _env_flag(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _run_agy_models(executable: str) -> list[str]:
+    """Run ``agy models`` and return the model labels it prints (one per line). Raises on failure."""
+
+    try:
+        result = subprocess.run(
+            [executable, "models"], capture_output=True, text=True, timeout=15, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"`agy models` did not run: {exc}") from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip() or f"exit code {result.returncode}"
+        raise RuntimeError(f"`agy models` failed: {detail[:200]}")
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
 class AntigravityAdapter:
@@ -131,6 +148,22 @@ class AntigravityAdapter:
             structured_events=True, resumable=True, edits_files=editing, runs_commands=editing,
             experimental=True,
         )
+
+    #: How selectable models are discovered for this CLI, shown in the wizard (Phase 4). Antigravity
+    #: is the one first-class CLI that can enumerate models offline.
+    model_discovery_method = "agy models"
+
+    async def list_models(self) -> list[str]:
+        """Discover selectable models by parsing ``agy models`` (verified live against agy v1.1.1).
+
+        Real command, not a hard-coded list: ``agy models`` prints one model label per line
+        (e.g. ``Gemini 3.5 Flash (Medium)``). A non-zero exit or missing executable raises, so the
+        wizard can fall back to a manual id / the CLI's own default instead of showing a fake list.
+        """
+
+        if not self.executable:
+            raise RuntimeError("antigravity (agy) is not installed")
+        return await asyncio.to_thread(_run_agy_models, self.executable)
 
     # ------------------------------------------------------------------ running
 

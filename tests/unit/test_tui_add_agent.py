@@ -21,6 +21,12 @@ from openagent.runtimes.cli.registry import CliRegistryEntry
 from openagent.tui.app import OpenAgentTUI
 from openagent.tui.screens.add_agent import AddAgentScreen
 from openagent.tui.screens.lists import AgentsScreen
+from tests.tui_helpers import select_all_option_values
+
+
+def _model_option_values(select: Select) -> list[str]:
+    """Discovered model ids currently offered, excluding the blank/NULL sentinel."""
+    return [v for v in select_all_option_values(select) if isinstance(v, str)]
 
 # --------------------------------------------------------------------------- fixtures / helpers
 
@@ -228,6 +234,73 @@ async def test_antigravity_unavailable_blocks_creation(tmp_path: Path, monkeypat
         assert screen.step == "cli"
         assert "Install or configure" in str(screen.query_one("#err-cli").render())
     assert oa.agents.list() == []
+
+
+# --------------------------------------------------------------------------- CLI path: model discovery (Phase 4)
+
+async def test_cli_model_discovery_populates_select_and_pins_model(tmp_path: Path, monkeypatch):
+    """Discover Models runs the adapter's real discovery; a chosen id pins onto AgentRuntime.model."""
+
+    from openagent.runtimes.cli.registry import CliModelDiscovery
+
+    async def _fake_discover(cli_type, executable=None):
+        return CliModelDiscovery(cli_type, True, ["Gemini 3.5 Flash (Low)", "Claude Sonnet 4.6"],
+                                 "agy models")
+
+    monkeypatch.setattr("openagent.tui.screens.add_agent.discover_cli_models", _fake_discover)
+    oa = _app(tmp_path)
+    app = OpenAgentTUI(oa)
+    async with app.run_test() as pilot:
+        screen = await _open(pilot)
+        await _pick_radio(pilot, screen, "backend", 0)
+        await _continue(pilot)
+        await _pick_radio(pilot, screen, "cli", 2)  # Antigravity
+        await _continue(pilot)
+        assert screen.step == "cli_config"
+        screen._load_cli_models()
+        await pilot.pause()
+        await pilot.pause()
+        options = _model_option_values(screen.query_one("#cli_model_select", Select))
+        assert options == ["Gemini 3.5 Flash (Low)", "Claude Sonnet 4.6"]
+        assert "found 2 model(s)" in str(screen.query_one("#cli-model-status").render())
+        # Pin a discovered model via the manual id field (the captured source of truth).
+        screen.query_one("#cli_model", Input).value = "Gemini 3.5 Flash (Low)"
+        screen.query_one("#name", Input).value = "agy-pinned"
+        await _create(pilot)
+    agent = oa.agents.get("agy-pinned")
+    assert agent is not None and agent.runtime.model == "Gemini 3.5 Flash (Low)"
+
+
+async def test_cli_model_discovery_unavailable_keeps_manual_and_default_paths(tmp_path: Path, monkeypatch):
+    """When a CLI can't list models, the wizard says so honestly and manual/blank still work."""
+
+    from openagent.runtimes.cli.registry import CliModelDiscovery
+
+    async def _fake_discover(cli_type, executable=None):
+        return CliModelDiscovery(cli_type, False, [], "",
+                                 "automatic model discovery is unavailable for Codex CLI")
+
+    monkeypatch.setattr("openagent.tui.screens.add_agent.discover_cli_models", _fake_discover)
+    oa = _app(tmp_path)
+    app = OpenAgentTUI(oa)
+    async with app.run_test() as pilot:
+        screen = await _open(pilot)
+        await _pick_radio(pilot, screen, "backend", 0)
+        await _continue(pilot)
+        await _pick_radio(pilot, screen, "cli", 0)  # Codex — no offline model listing
+        await _continue(pilot)
+        screen._load_cli_models()
+        await pilot.pause()
+        await pilot.pause()
+        status = str(screen.query_one("#cli-model-status").render())
+        assert "unavailable" in status
+        assert _model_option_values(screen.query_one("#cli_model_select", Select)) == []
+        # Manual id still works — nothing is blocked or faked.
+        screen.query_one("#cli_model", Input).value = "o3"
+        screen.query_one("#name", Input).value = "codex-manual"
+        await _create(pilot)
+    agent = oa.agents.get("codex-manual")
+    assert agent is not None and agent.runtime.model == "o3"
 
 
 # --------------------------------------------------------------------------- API path: new connection

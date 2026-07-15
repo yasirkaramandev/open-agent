@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from openagent.runtimes.cli import antigravity as ag
 from openagent.runtimes.cli.antigravity import (
     AntigravityAdapter,
     AntigravityPermissionError,
@@ -25,6 +26,7 @@ from openagent.runtimes.cli.registry import (
     build_cli_adapter,
     cli_display_name,
     cli_status_label,
+    discover_cli_models,
     known_cli_types,
 )
 
@@ -222,6 +224,61 @@ def test_resume_passes_conversation_id(tmp_path: Path):
     )
     assert "--conversation" in args and "conv-123" in args
     assert args[args.index("--mode") + 1] == "plan"  # read-only -> plan mode, no edits
+
+
+# --------------------------------------------------------------------------- model discovery (Phase 4)
+
+def test_run_agy_models_parses_lines(monkeypatch):
+    def _fake_run(args, **kw):
+        return ag.subprocess.CompletedProcess(
+            args, 0, stdout="Gemini 3.5 Flash (Low)\n\n  Claude Opus 4.6 (Thinking)  \n", stderr=""
+        )
+
+    monkeypatch.setattr(ag.subprocess, "run", _fake_run)
+    assert ag._run_agy_models("/bin/agy") == [
+        "Gemini 3.5 Flash (Low)", "Claude Opus 4.6 (Thinking)"
+    ]
+
+
+def test_run_agy_models_raises_on_nonzero_exit(monkeypatch):
+    def _fake_run(args, **kw):
+        return ag.subprocess.CompletedProcess(args, 1, stdout="", stderr="not signed in")
+
+    monkeypatch.setattr(ag.subprocess, "run", _fake_run)
+    with pytest.raises(RuntimeError, match="not signed in"):
+        ag._run_agy_models("/bin/agy")
+
+
+def test_discover_cli_models_success(monkeypatch):
+    async def _models(self):
+        return ["Model A", "Model B"]
+
+    monkeypatch.setattr(AntigravityAdapter, "list_models", _models)
+    result = asyncio.run(discover_cli_models("antigravity"))
+    assert result.available is True
+    assert result.models == ["Model A", "Model B"]
+    assert result.method == "agy models"
+
+
+def test_discover_cli_models_surfaces_the_real_error(monkeypatch):
+    async def _boom(self):
+        raise RuntimeError("`agy models` failed: not signed in")
+
+    monkeypatch.setattr(AntigravityAdapter, "list_models", _boom)
+    result = asyncio.run(discover_cli_models("antigravity"))
+    assert result.available is False
+    assert "not signed in" in (result.error or "")  # honest reason, not a silent empty list
+    assert result.method == "agy models"
+
+
+def test_discover_cli_models_unavailable_for_clis_without_listing():
+    """Codex/Claude expose --model but no listing command — report that honestly, don't invent one."""
+
+    for cli in ("codex", "claude"):
+        result = asyncio.run(discover_cli_models(cli))
+        assert result.available is False
+        assert result.models == []
+        assert "unavailable" in (result.error or "")
 
 
 def test_registry_knows_antigravity():

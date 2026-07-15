@@ -41,7 +41,12 @@ from ...core.models import Protocol, RuntimeType
 from ...core.permissions import profile_names
 from ...credentials.store import CredentialError
 from ...providers.factory import PRESETS, get_preset, preset_names
-from ...runtimes.cli.registry import CliRegistryEntry, cli_registry_entries
+from ...runtimes.cli.registry import (
+    CliModelDiscovery,
+    CliRegistryEntry,
+    cli_registry_entries,
+    discover_cli_models,
+)
 from ...services.agent_service import AgentError
 from ...services.provider_service import ProviderValidationError, resolve_credential
 from ..markup import safe_markup
@@ -229,6 +234,11 @@ class AddAgentScreen(Screen):
                     classes="hint",
                 )
                 yield Input(placeholder="e.g. gpt-5.5", id="cli_model")
+                yield Select([], id="cli_model_select", allow_blank=True,
+                             prompt="discover models, or type an id above")
+                yield Static("", id="cli-model-status", classes="hint")
+                with Horizontal():
+                    yield Button("Discover Models", id="cli-load-models")
             # ---- Step 4B final info (API) ---------------------------------
             yield Static("", id="api-summary", classes="card")
 
@@ -307,6 +317,9 @@ class AddAgentScreen(Screen):
             self.query_one("#cli-model-row").display = True
             self.query_one("#common-fields").display = True
             self._render_cli_runtime_info()
+            # Clear any model list discovered for a previously-selected CLI so it can't leak across.
+            self.query_one("#cli_model_select", Select).set_options([])
+            self._set_cli_model_status("")
         elif step == "api_config":
             self.query_one("#api-summary").display = True
             self.query_one("#common-fields").display = True
@@ -360,6 +373,8 @@ class AddAgentScreen(Screen):
             self._test_connection()
         elif bid == "load-models":
             self._load_models()
+        elif bid == "cli-load-models":
+            self._load_cli_models()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         # Enter in a field advances (Continue) on non-final steps (part 16).
@@ -635,6 +650,10 @@ class AddAgentScreen(Screen):
             chosen = selected_string(event.select)
             if chosen:
                 self.query_one("#model", Input).value = chosen
+        elif event.select.id == "cli_model_select":
+            chosen = selected_string(event.select)
+            if chosen:
+                self.query_one("#cli_model", Input).value = chosen
 
     def _sync_cli_detail(self) -> None:
         entry = self._entry_for(self._radio_value("#cli", self._cli_values))
@@ -799,6 +818,40 @@ class AddAgentScreen(Screen):
             return
         select.set_options([(mid, mid) for mid in ids])
         self._status(f"[green]loaded {len(ids)} model(s)[/green] — pick one, or type an id below")
+
+    # ------------------------------------------------------------------ CLI model discovery (Phase 4)
+
+    def _load_cli_models(self) -> None:
+        cli = self.state.cli_type or self._radio_value("#cli", self._cli_values)
+        if not cli:
+            self._set_cli_model_status("[red]choose a CLI first[/red]")
+            return
+        self._set_cli_model_status("[dim]discovering models…[/dim]")
+        self.run_worker(self._do_load_cli_models(cli, self.state.cli_executable), exclusive=True)
+
+    async def _do_load_cli_models(self, cli_type: str, executable: str | None) -> None:
+        result = await discover_cli_models(cli_type, executable)
+        self._populate_cli_models(result)
+
+    def _populate_cli_models(self, result: CliModelDiscovery) -> None:
+        select = self.query_one("#cli_model_select", Select)
+        if not result.available:
+            # Honest: discovery is not available/failed — keep the manual id + "CLI default" paths.
+            select.set_options([])
+            self._set_cli_model_status(f"[yellow]{safe_markup(result.error or 'model discovery unavailable', 200)}[/yellow]")
+            return
+        if not result.models:
+            select.set_options([])
+            self._set_cli_model_status("[yellow]no models reported — type an id above, or leave blank for the CLI default[/yellow]")
+            return
+        select.set_options([(m, m) for m in result.models])
+        via = f" (via {safe_markup(result.method)})" if result.method else ""
+        self._set_cli_model_status(
+            f"[green]found {len(result.models)} model(s){via}[/green] — pick one, or type an id above"
+        )
+
+    def _set_cli_model_status(self, msg: str) -> None:
+        self.query_one("#cli-model-status", Static).update(msg)
 
     # ------------------------------------------------------------------ helpers
 
