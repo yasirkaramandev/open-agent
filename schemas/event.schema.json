@@ -1,0 +1,78 @@
+{
+  "$defs": {
+    "EventType": {
+      "enum": [
+        "run.started",
+        "run.completed",
+        "run.failed",
+        "run.cancelled",
+        "session.created",
+        "session.resumed",
+        "message.started",
+        "message.delta",
+        "message.completed",
+        "tool.requested",
+        "tool.started",
+        "tool.completed",
+        "tool.failed",
+        "command.started",
+        "command.output",
+        "command.completed",
+        "file.read",
+        "file.created",
+        "file.modified",
+        "file.deleted",
+        "approval.requested",
+        "approval.accepted",
+        "approval.denied",
+        "question.requested",
+        "question.answered",
+        "question.cancelled",
+        "usage.updated",
+        "rate_limit.detected",
+        "retry.scheduled",
+        "artifact.created",
+        "test.completed",
+        "log"
+      ],
+      "title": "EventType",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A single event in a run's ``events.jsonl`` (spec \u00a76.3).",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "timestamp": {
+      "title": "Timestamp",
+      "type": "string"
+    },
+    "type": {
+      "$ref": "#/$defs/EventType"
+    },
+    "source": {
+      "title": "Source",
+      "type": "string"
+    },
+    "data": {
+      "additionalProperties": true,
+      "title": "Data",
+      "type": "object"
+    }
+  },
+  "required": [
+    "run_id",
+    "type",
+    "source"
+  ],
+  "title": "OpenAgent NormalizedEvent",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

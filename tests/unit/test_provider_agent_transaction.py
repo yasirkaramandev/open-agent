@@ -1,0 +1,195 @@
+"""Atomic provider+agent creation and rollback (item 3).
+
+`AgentService.create_with_new_provider` must leave the system exactly as it started whenever agent
+creation fails after the provider was written: no provider row, no keychain secret, no half-written
+OPENAGENT.md.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from openagent.app import OpenAgentApp
+from openagent.config import Paths
+from openagent.core.models import CredentialRef, CredentialType, RuntimeType
+from openagent.credentials.store import CredentialError
+from openagent.services.agent_service import AgentError
+
+
+def _app(tmp_path: Path) -> OpenAgentApp:
+    project = tmp_path / "proj"
+    project.mkdir()
+    paths = Paths(
+        data_dir=tmp_path / "data", config_dir=tmp_path / "config",
+        db_path=tmp_path / "data" / "openagent.db", project_root=project,
+    )
+    return OpenAgentApp(paths)
+
+
+def _md_missing_agent(oa: OpenAgentApp, agent: str) -> bool:
+    md = oa.paths.openagent_md()
+    return (not md.exists()) or (f"`{agent}`" not in md.read_text(encoding="utf-8"))
+
+
+def test_happy_path_creates_both(tmp_path: Path) -> None:
+    oa = _app(tmp_path)
+    agent = oa.agents.create_with_new_provider(
+        provider_name="ds", provider_type="custom", base_url="https://api.test/v1",
+        key_env="DS_KEY", credential_source="env", model="m", name="ds-coder",
+    )
+    assert agent.name == "ds-coder"
+    assert oa.providers.get("ds") is not None
+    assert not _md_missing_agent(oa, "ds-coder")
+
+
+def test_duplicate_agent_name_leaves_no_provider(tmp_path: Path) -> None:
+    oa = _app(tmp_path)
+    oa.agents.create(name="dup", runtime_type=RuntimeType.CLI, cli="codex")
+    with pytest.raises(AgentError):
+        oa.agents.create_with_new_provider(
+            provider_name="ds", provider_type="custom", base_url="https://api.test/v1",
+            key_env="DS_KEY", credential_source="env", model="m", name="dup",
+        )
+    assert oa.providers.get("ds") is None
+
+
+def test_agent_validation_failure_leaves_no_provider(tmp_path: Path) -> None:
+    oa = _app(tmp_path)
+    with pytest.raises(AgentError):
+        oa.agents.create_with_new_provider(
+            provider_name="ds", provider_type="custom", base_url="https://api.test/v1",
+            key_env="DS_KEY", credential_source="env", model="", name="ds-coder",
+        )
+    assert oa.providers.get("ds") is None
+
+
+def test_openagent_md_write_failure_rolls_back_provider_and_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    oa = _app(tmp_path)
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("openagent.services.agent_service.write_openagent_md", boom)
+    with pytest.raises(OSError):
+        oa.agents.create_with_new_provider(
+            provider_name="ds", provider_type="custom", base_url="https://api.test/v1",
+            key_env="DS_KEY", credential_source="env", model="m", name="ds-coder",
+        )
+    # Provider row rolled back, agent row rolled back.
+    assert oa.providers.get("ds") is None
+    assert oa.agents.get("ds-coder") is None
+
+
+def test_keychain_write_failure_persists_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    oa = _app(tmp_path)
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise CredentialError("keyring unavailable")
+
+    monkeypatch.setattr(oa.credentials, "set_secret", boom)
+    with pytest.raises(CredentialError):
+        oa.agents.create_with_new_provider(
+            provider_name="ds", provider_type="custom", base_url="https://api.test/v1",
+            api_key="sk-secret", credential_source="keychain", model="m", name="ds-coder",
+        )
+    assert oa.providers.get("ds") is None
+    assert oa.agents.get("ds-coder") is None
+
+
+def test_provider_repository_failure_persists_no_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    oa = _app(tmp_path)
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("db is locked")
+
+    monkeypatch.setattr(oa.repos.providers, "upsert", boom)
+    with pytest.raises(RuntimeError):
+        oa.agents.create_with_new_provider(
+            provider_name="ds", provider_type="custom", base_url="https://api.test/v1",
+            key_env="DS_KEY", credential_source="env", model="m", name="ds-coder",
+        )
+    assert oa.providers.get("ds") is None
+    assert oa.agents.get("ds-coder") is None
+
+
+# --------------------------------------------------------------------------- keychain rollback (item 17)
+
+
+def _ref(name: str) -> CredentialRef:
+    return CredentialRef(type=CredentialType.KEYCHAIN, service="openagent",
+                         account=f"provider/{name}")
+
+
+def test_failed_provider_write_restores_the_previous_secret_exactly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed provider write must put the user's *old* key back, byte for byte (item 17).
+
+    The old rollback only tracked whether it had written a secret where none existed. When one *did*
+    exist it was overwritten and then left there — so a failure destroyed the user's working key and
+    replaced it with a key belonging to a provider that was never saved. Checking `is not None` is
+    not enough; the previous **value** has to be restored.
+    """
+
+    oa = _app(tmp_path)
+    ref = _ref("acme")
+    oa.credentials.set_secret(ref, "old-secret")
+
+    def boom(_provider):
+        raise RuntimeError("db is down")
+
+    monkeypatch.setattr(oa.repos.providers, "upsert", boom)
+
+    with pytest.raises(RuntimeError, match="db is down"):
+        oa.providers.add(name="acme", provider_type="custom", base_url="https://api.test/v1",
+                         api_key="new-secret")
+
+    assert oa.credentials.resolve(ref) == "old-secret"
+    assert oa.providers.get("acme") is None
+
+
+def test_failed_provider_write_removes_a_secret_that_did_not_exist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    oa = _app(tmp_path)
+    ref = _ref("acme")
+    assert oa.credentials.resolve(ref) is None
+
+    monkeypatch.setattr(oa.repos.providers, "upsert",
+                        lambda _p: (_ for _ in ()).throw(RuntimeError("db is down")))
+
+    with pytest.raises(RuntimeError):
+        oa.providers.add(name="acme", provider_type="custom", base_url="https://api.test/v1",
+                         api_key="new-secret")
+
+    assert oa.credentials.resolve(ref) is None  # nothing orphaned in the keychain
+
+
+def test_agent_transaction_rollback_restores_the_previous_secret(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The provider+agent transaction follows the same rule: a pre-existing secret survives."""
+
+    oa = _app(tmp_path)
+    ref = _ref("acme")
+    oa.credentials.set_secret(ref, "old-secret")
+
+    monkeypatch.setattr(oa.repos.agents, "upsert",
+                        lambda _a: (_ for _ in ()).throw(RuntimeError("agent write failed")))
+
+    with pytest.raises(RuntimeError):
+        oa.agents.create_with_new_provider(
+            provider_name="acme", provider_type="custom", base_url="https://api.test/v1",
+            api_key="new-secret", model="m", name="acme-coder",
+        )
+
+    assert oa.credentials.resolve(ref) == "old-secret"   # the user's old key is intact
+    assert oa.providers.get("acme") is None              # …and the half-made provider is gone
