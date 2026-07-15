@@ -40,11 +40,11 @@ capture), **Offline contract tested** (mocked transport), **Experimental**, **Un
 | Area | State |
 |---|---|
 | **Codex CLI** | **Verified live** against `codex-cli 0.142.5`, end to end *through OpenAgent* — not just at the CLI. Captured from real runs: reasoning summaries, the `todo_list` plan (projected onto one checklist), `command_execution` with output, `file_change` (add/update/delete), `web_search`, usage incl. `reasoning_output_tokens`, cancellation (process tree terminated, status `cancelled`, no later `completed`), resume (turn 2 in the same thread), and a real failure (normalized `schema_mismatch`). Fixtures in `tests/fixtures/codex_v0142_*.jsonl` are sanitized captures of those runs. |
-| **Antigravity (`agy`)** | **Verified live (read-only)** against `agy v1.1.0`: the `--print --output-format json` envelope and `--conversation` resume were captured from the real CLI. **Editing is experimental and off by default** — see [Antigravity permissions](#antigravity-permissions). Output is a single final JSON object, so events are **coarse** (final text + usage + status), never per-file/per-command. |
+| **Antigravity (`agy`)** | **Verified live (read-only)**: the `--print --output-format json` envelope and `--conversation` resume were captured from `agy v1.1.0`, and re-exercised live on `agy v1.1.1` through OpenAgent in the [multi-agent demo](docs/multi-agent-weather-demo.md) (real runs, terminal states, `reasoning_tokens` from `thinking_tokens`). Model discovery is live via `agy models`. **Editing is experimental and off by default** — see [Antigravity permissions](#antigravity-permissions). Output is a single final JSON object, so events are **coarse** (final text + usage + status), never per-file/per-command. |
 | **Claude Code** | **Fixture validated** — the `stream-json` mapping and invocation are ready, but `claude` is not installed on this machine, so nothing here has been run against a live CLI. |
 | API agents (OpenAI Chat/Responses, Anthropic, OpenAI-compatible) | **Offline contract tested** end to end (mocked HTTP): tool loop, progress tools, cancellation, worktree diff, artifacts, redaction. **Not live-verified** against a paid key. Presets for DeepSeek/Qwen/Kimi/GLM/MiniMax/OpenRouter/Mistral/Together/Fireworks/Ollama/LM Studio share the compatible adapters and are **not individually live-verified**. |
 | **Run Console** (live reasoning/plan/commands/files/diff/tests/usage/raw events) | Pilot-tested on Textual 8.2.8 at 80×24, 100×30 and 120×40; the live-run, leave-and-reopen, cancel and resume paths are driven end to end with a real subprocess. The Codex side of it is the live verification above. |
-| TUI Add-Agent **wizard** | Pilot-tested with **real keyboard input** (Space selects, Enter advances): CLI and API paths, masked key cleared on every transition, connections filtered to the provider family, credentials validated on the connection step, `max_steps` bounded. |
+| TUI Add-Agent **wizard** | Pilot-tested with **real keyboard input** (Space selects, Enter advances): CLI and API paths, masked key cleared on every transition, connections filtered to the provider family, credentials validated on the connection step, `max_steps` bounded. **Model discovery** per backend — API providers via their models endpoint, Antigravity via `agy models`; CLIs that can't list models (Codex/Claude) fall back honestly to a manual id or the CLI's own default. |
 | Security (minimal env, command allowlist, worktree/copy/in-place isolation, redaction, process-tree cancel, PID-identity recovery, sandboxed credential commands, streaming output bound, exact keychain rollback) | Unit + integration tested (see `tests/`). |
 | **OS-level sandbox** | **Unsupported.** OpenAgent isolates by *workspace* (git worktree / copy), not by kernel sandbox. A CLI backend may bring its own (Codex `--sandbox`), and OpenAgent maps profiles onto it — but OpenAgent itself does not sandbox processes. |
 | **Gemini** | **Not part of v0.1.** |
@@ -91,6 +91,13 @@ openagent output --id <run-id> --format diff
 openagent message --id <run-id> -p "now add a test"
 openagent cancel --id <run-id>
 ```
+
+## Example: a real multi-agent build
+
+[`examples/weather-map-app`](examples/weather-map-app/) is a working, no-API-key weather map built
+as an end-to-end multi-agent demonstration: three `agy` agents (data / UI / QA) were created and run
+**through OpenAgent**, the QA agent found a real bug, and a revision round fixed it — all with real
+run IDs and terminal states. See [docs/multi-agent-weather-demo.md](docs/multi-agent-weather-demo.md).
 
 ## The Run Console
 
