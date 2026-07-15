@@ -167,3 +167,24 @@ def test_agent_add_subcommand_also_persists_cli_model():
     assert result.exit_code == 0, result.stdout
     agent = json.loads(runner.invoke(app, ["agent", "show", "codex-coder"]).stdout)
     assert agent["runtime"]["model"] == "gpt-5.5"
+
+
+def test_cancel_missing_run_reports_not_found_not_false_success():
+    # `openagent cancel` must never print "cancelled" for a run that does not exist (§3.3).
+    result = runner.invoke(app, ["cancel", "--id", "run_nope"])
+    assert result.exit_code == 1
+    combined = result.stdout + str(result.stderr or "")
+    assert "not found" in combined
+    assert "cancelled" not in result.stdout.lower()
+
+
+def test_cancel_finished_run_is_not_reported_as_cancelled():
+    from openagent.app import OpenAgentApp
+    from openagent.core.models import Run, RunStatus
+
+    oa = OpenAgentApp.create()
+    oa.repos.runs.upsert(Run(id="run_done", agent="x", status=RunStatus.COMPLETED))
+    result = runner.invoke(app, ["cancel", "--id", "run_done"])
+    assert result.exit_code == 0
+    assert "already finished" in result.stdout
+    assert "cancelled" not in result.stdout.lower()

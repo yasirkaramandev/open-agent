@@ -22,7 +22,7 @@ from ..core.permissions import profile_names
 from ..providers.factory import PRESETS, preset_names
 from ..services.agent_service import AgentError
 from ..services.provider_service import ProviderInUseError, ProviderValidationError
-from ..services.run_service import RunError
+from ..services.run_service import CancelOutcome, RunError
 from ..tui.markup import safe_line, safe_markup
 
 app = typer.Typer(
@@ -224,9 +224,27 @@ def resume(id: str = typer.Option(..., "--id"), prompt: str = typer.Option("cont
 
 @app.command()
 def cancel(id: str = typer.Option(..., "--id")) -> None:
-    """Cancel a running run (spec §32)."""
-    _run(_app().runs.cancel(id))
-    console.print(f"[yellow]cancelled[/yellow] {id}")
+    """Cancel a running run (spec §32, §3.3).
+
+    Reports exactly what happened and never claims a false success: a run that was already finished,
+    or an orphaned run whose recorded process is gone/reused, is reported as such (non-zero exit for
+    the cases where nothing was stopped).
+    """
+    outcome = _run(_app().runs.cancel(id))
+    safe_id = safe_markup(id)
+    if outcome is CancelOutcome.TERMINATED:
+        console.print(f"[yellow]cancelled[/yellow] {safe_id} — process tree terminated")
+    elif outcome is CancelOutcome.SIGNALLED:
+        console.print(f"[yellow]cancelling[/yellow] {safe_id} — the active turn was signalled to stop")
+    elif outcome is CancelOutcome.ALREADY_TERMINAL:
+        console.print(f"[dim]{safe_id} has already finished; nothing to cancel[/dim]")
+    elif outcome is CancelOutcome.NOT_FOUND:
+        _fail(f"run {id!r} not found")
+    elif outcome is CancelOutcome.IDENTITY_MISMATCH:
+        _fail(f"{id}: the recorded process is gone or its PID was reused; refused to terminate an "
+              "unrelated process. The run was left untouched.")
+    elif outcome is CancelOutcome.NOT_CANCELLABLE:
+        _fail(f"{id}: orphaned run has no safely identifiable live process to cancel.")
 
 
 @app.command()

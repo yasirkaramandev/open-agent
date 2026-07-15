@@ -85,9 +85,12 @@ class ArtifactWriter:
             "permission_profile": run.permission_profile,
         })
 
-    def write_status(self, run: Run) -> None:
+    def write_status(
+        self, run: Run, *, artifacts_partial: bool = False,
+        artifact_failure: dict | None = None,
+    ) -> None:
         status = enum_value(run.status)
-        self._json("status.json", {
+        data = {
             "run_id": run.id,
             "status": status,
             "turns": run.turns,
@@ -96,10 +99,13 @@ class ArtifactWriter:
             "exit_code": run.exit_code,
             "failure_type": redact(run.failure_type) if run.failure_type else None,
             "session_id": run.provider_session_id,
-        })
+        }
+        _mark_partial(data, artifacts_partial, artifact_failure)
+        self._json("status.json", data)
 
     def write_results(
-        self, run: Run, art: RunArtifacts, projection: RunProjection | None = None
+        self, run: Run, art: RunArtifacts, projection: RunProjection | None = None,
+        *, artifacts_partial: bool = False, artifact_failure: dict | None = None,
     ) -> None:
         status = enum_value(run.status)
         # Scrub free text and the diff before anything hits disk (spec §30).
@@ -120,6 +126,7 @@ class ArtifactWriter:
             "failure_type": redact(run.failure_type) if run.failure_type else None,
         }
         result.update(_structured(projection))
+        _mark_partial(result, artifacts_partial, artifact_failure)
         self._json("result.json", result)
         self._json("tests.json", art.tests.to_dict())
         self._text("changes.diff", redact(art.diff))
@@ -183,6 +190,24 @@ class ArtifactWriter:
                 tmp.unlink()
             raise
         _secure_file(path)
+
+
+def _mark_partial(data: dict, artifacts_partial: bool, artifact_failure: dict | None) -> None:
+    """Stamp an explicit partial-bundle marker onto status/result (§5).
+
+    When failure recovery could not regenerate every artifact from a consistent, completed run, the
+    bundle is flagged so a downstream reader (TUI, CLI, another agent) knows it is recovered/partial
+    rather than a clean result — and which stage failed.
+    """
+
+    if not artifacts_partial:
+        return
+    data["artifacts_partial"] = True
+    if artifact_failure:
+        data["artifact_failure"] = {
+            "stage": str(artifact_failure.get("stage", "")),
+            "message": redact(str(artifact_failure.get("message", ""))),
+        }
 
 
 def _secure_file(path: Path) -> None:

@@ -95,6 +95,22 @@ async def test_terminal_append_failure_still_terminates(oa: OpenAgentApp, monkey
     # terminal and its recorded status is not "completed".
     assert enum_value(oa.runs.get(result.id).status) == "failed"
 
+    # §5: the whole bundle is reconciled — nothing is left claiming the run completed.
+    status = json.loads(oa.runs.output(result.id, "status"))
+    result_json = json.loads(oa.runs.output(result.id, "json"))
+    assert status["status"] == "failed"
+    assert result_json["status"] == "failed"
+    # A stale "completed" timeline must not survive.
+    timeline = (oa.paths.run_dir(result.id) / "timeline.md").read_text()
+    status_line = next(ln for ln in timeline.splitlines() if ln.startswith("- Status:"))
+    assert "completed" not in status_line and "failed" in status_line
+    # events.jsonl carries no success terminal.
+    assert "run.completed" not in oa.runs.output(result.id, "events")
+    # The partial bundle is explicitly flagged, with the failing stage.
+    assert status.get("artifacts_partial") is True
+    assert result_json.get("artifacts_partial") is True
+    assert result_json.get("artifact_failure", {}).get("stage") == "finalize"
+
 
 async def test_write_status_failure_still_terminates(oa: OpenAgentApp, monkeypatch):
     monkeypatch.setattr(ArtifactWriter, "write_status", _boom)
