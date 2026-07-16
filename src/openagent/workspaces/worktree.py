@@ -15,6 +15,7 @@ files and a unified diff are computed by comparing the workspace to the untouche
 from __future__ import annotations
 
 import difflib
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -44,20 +45,137 @@ class GitError(RuntimeError):
     pass
 
 
-def _git(args: list[str], cwd: Path) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False
-    )
+class GitMissing(GitError):
+    """git is not installed / not on PATH (spec §10)."""
+
+
+class GitTimeout(GitError):
+    """A git subprocess exceeded its budget and its process tree was terminated (spec §10)."""
+
+
+#: Every git call is bounded (spec §10). git can block indefinitely — an index.lock held by another
+#: process, a credential/pager prompt, a network remote — and an unbounded subprocess.run() would
+#: hang the whole run with no diagnosis.
+GIT_TIMEOUT = 60
+
+
+def _git(args: list[str], cwd: Path, *, timeout: int = GIT_TIMEOUT) -> str:
+    """Run a git command, bounded, with the environment pinned to non-interactive.
+
+    ``GIT_TERMINAL_PROMPT=0`` / ``GIT_OPTIONAL_LOCKS=0`` stop git from blocking on a credential
+    prompt or taking the index lock for read-only queries. On timeout the whole process tree is
+    terminated — killing only the direct child can leave a git helper behind holding the lock.
+    """
+
+    env = {
+        **os.environ,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_PAGER": "cat",
+    }
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed argv, never a shell
+            ["git", *args],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        # git is not installed. Callers decide what to do; is_git_repo() treats it as "not a repo"
+        # so `auto` degrades to a copy workspace instead of crashing the run (spec §10).
+        raise GitMissing("git is not installed or not on PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise GitTimeout(f"git {' '.join(args)} timed out after {timeout}s") from exc
     if result.returncode != 0:
         raise GitError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
     return result.stdout
 
 
+def git_available() -> bool:
+    """Whether a usable git exists on PATH (spec §10)."""
+
+    return shutil.which("git") is not None
+
+
+def _porcelain_paths(raw: str) -> list[str]:
+    """Parse ``git status --porcelain=v1 -z`` into paths (spec §10).
+
+    NUL-delimited, because the human-readable format is genuinely ambiguous: a filename containing a
+    space parsed fine by accident, but git *quotes* names with specials (``"a\\tb"``), and a rename
+    is emitted as ``R  old -> new`` — so slicing ``line[3:]`` produced a mangled path, and a filename
+    containing a newline broke the line split entirely. With ``-z`` each entry is
+    ``XY <path>\\0`` and a rename adds a second ``<origin>\\0`` record, with no quoting at all.
+    """
+
+    paths: list[str] = []
+    fields = raw.split("\0")
+    index = 0
+    while index < len(fields):
+        entry = fields[index]
+        index += 1
+        # An entry is `XY <path>`: the status is exactly two columns wide and the path starts at 3.
+        # It must be sliced by position, not split on whitespace — either column may itself be a
+        # space (` M foo` is "modified, unstaged"), and paths legitimately contain spaces.
+        if len(entry) < 4:
+            continue
+        status, path = entry[:2], entry[3:]
+        if not path:
+            continue
+        paths.append(path)
+        # A rename/copy emits its ORIGIN path as the very next NUL-terminated field. Consume it, or
+        # it would be misread as the next status entry. The R/C code can land in either column
+        # (staged vs. worktree), so check both.
+        if "R" in status or "C" in status:
+            index += 1
+    return paths
+
+
+def _untracked_files(root: Path) -> list[str]:
+    """Untracked, non-ignored files — read-only, so the index is never written (spec §10)."""
+
+    raw = _git(["ls-files", "--others", "--exclude-standard", "-z"], root)
+    return [p for p in raw.split("\0") if p]
+
+
+def _untracked_diff(root: Path, rel: str) -> str:
+    """A diff for one untracked file via ``--no-index`` (compares paths; never uses the index)."""
+
+    target = root / rel
+    if not target.is_file():
+        return ""
+    try:
+        # --no-index exits 1 when the files differ, which is the normal case here, so the non-zero
+        # return is expected rather than an error.
+        result = subprocess.run(  # noqa: S603 - fixed argv, never a shell
+            ["git", "diff", "--no-index", "--", os.devnull, rel],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=GIT_TIMEOUT,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_PAGER": "cat"},
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ""
+    return result.stdout
+
+
 def is_git_repo(path: Path) -> bool:
+    """Whether ``path`` is inside a git work tree.
+
+    Returns False when git is missing or hangs, rather than propagating: a machine without git must
+    still be able to run agents (the `auto` strategy falls back to a copy workspace). Previously only
+    ``GitError`` was caught, so a missing git raised FileNotFoundError straight out of
+    ``subprocess.run`` and crashed run setup.
+    """
+
     try:
         out = _git(["rev-parse", "--is-inside-work-tree"], path)
         return out.strip() == "true"
-    except GitError:
+    except GitError:  # GitMissing and GitTimeout are subclasses
         return False
 
 
@@ -202,21 +320,27 @@ class WorktreeManager:
 
     def changed_files(self, ws: Workspace) -> list[str]:
         if self._uses_git_diff(ws):
-            out = _git(["status", "--porcelain"], ws.root)
-            files = []
-            for line in out.splitlines():
-                if line.strip():
-                    files.append(line[3:].strip())
-            return sorted(files)
+            return sorted(_porcelain_paths(_git(["status", "--porcelain=v1", "-z"], ws.root)))
         return sorted(self._compare(ws)[0])
 
     def diff(self, ws: Workspace) -> str:
-        """Combined diff of the run's changes."""
+        """Combined diff of the run's changes — **without touching the user's index** (spec §10).
 
-        if self._uses_git_diff(ws):
-            _git(["add", "-A", "-N"], ws.root)  # intent-to-add so new files show in diff
-            return _git(["diff"], ws.root)
-        return self._text_diff(ws)
+        This used to run ``git add -A -N`` to make untracked files visible to ``git diff``. That
+        writes intent-to-add entries into the real index, and for an in-place run (``--worktree
+        none``) ``ws.root`` *is* the user's own repository — so producing a diff silently staged
+        their untracked files. Reading state must not mutate it.
+
+        Instead: ``git diff`` for tracked changes, plus a ``--no-index`` diff per untracked file
+        (which compares two paths directly and never consults, or writes, the index).
+        """
+
+        if not self._uses_git_diff(ws):
+            return self._text_diff(ws)
+        parts = [_git(["diff"], ws.root)]
+        for rel in _untracked_files(ws.root):
+            parts.append(_untracked_diff(ws.root, rel))
+        return "".join(p for p in parts if p)
 
     def _uses_git_diff(self, ws: Workspace) -> bool:
         # Git diff works for a real worktree, and for an in-place run inside a git repo.
