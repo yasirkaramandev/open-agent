@@ -60,9 +60,10 @@ class EventLog:
             handle.write(safe.to_json_line() + "\n")
         _secure_file(self.path)
         if self.index is not None:
-            seq = self.index.next_seq(safe.run_id)
             type_ = safe.type if isinstance(safe.type, str) else safe.type.value
-            self.index.add(safe.id, safe.run_id, seq, type_, safe.timestamp, safe.source)
+            # One call, one transaction: the sequence is allocated and consumed together, so two
+            # appenders to this run cannot both claim the same number (spec §11).
+            self.index.append(safe.id, safe.run_id, type_, safe.timestamp, safe.source)
         return safe
 
     def read(self) -> Iterator[NormalizedEvent]:

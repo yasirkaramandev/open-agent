@@ -67,7 +67,10 @@ def test_event_log_writes_and_indexes(tmp_path: Path, repos: Repositories):
     events = list(log.read())
     assert [e.type for e in events] == ["run.started", "run.completed"]
     assert repos.event_index.count("run_01ABC") == 2
-    assert repos.event_index.next_seq("run_01ABC") == 3
+    # next_seq() is gone: allocating the sequence on a separate read connection from the insert that
+    # consumed it was the §11 race. Assert the sequences actually allocated instead — a stronger
+    # claim than what the next one would have been.
+    assert repos.event_index.sequences_for("run_01ABC") == [1, 2]
 
 
 def test_event_log_redacts_secrets(tmp_path: Path):

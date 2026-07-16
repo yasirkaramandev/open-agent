@@ -10,6 +10,7 @@ from collections.abc import Sequence
 
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, insert, or_, select
+from sqlalchemy.exc import IntegrityError
 
 from ..core.models import (
     AgentProfile,
@@ -285,27 +286,68 @@ class EventIndexRepository:
     def __init__(self, database: Database) -> None:
         self.db = database
 
-    def next_seq(self, run_id: str) -> int:
-        with self.db.engine.connect() as conn:
-            row = conn.execute(
-                select(func.max(t.events.c.seq)).where(t.events.c.run_id == run_id)
-            ).first()
-        return ((row[0] if row else 0) or 0) + 1
+    #: How many times to re-read the sequence after losing a race for it. Each retry means another
+    #: writer committed our number first; bounded so a pathological loop cannot spin forever.
+    _SEQ_RETRIES = 8
 
-    def add(
-        self, event_id: str, run_id: str, seq: int, type_: str, timestamp: str, source: str
-    ) -> None:
-        with self.db.engine.begin() as conn:
-            conn.execute(
-                insert(t.events).values(
-                    id=event_id,
-                    run_id=run_id,
-                    seq=seq,
-                    type=type_,
-                    timestamp=timestamp,
-                    source=source,
-                )
-            )
+    def append(self, event_id: str, run_id: str, type_: str, timestamp: str, source: str) -> int:
+        """Allocate this run's next sequence number and insert the row, atomically (spec §11).
+
+        This replaces ``next_seq()`` (a ``SELECT max(seq)+1`` on its own read connection) followed by
+        a separate ``add()`` write. Read-then-write across two connections is not atomic: two
+        appenders to the same run — the CLI and the TUI, or two threads of one run — both read
+        ``max=N``, both compute ``N+1``, and both write it. Nothing between the two statements held
+        the value, and the JSONL line is written *before* this call, so the loser of the race got an
+        IntegrityError with its event already on disk: an orphan line and an index that disagrees
+        with the log it indexes.
+
+        Both statements now run in **one** ``engine.begin()`` transaction. SQLite serialises writers,
+        so the allocation a writer commits is the one the next writer reads. The UNIQUE index on
+        ``(run_id, seq)`` from migration m004 becomes the backstop rather than the discovery
+        mechanism: a writer that still loses retries with a freshly read maximum instead of failing.
+
+        Returns the sequence number actually allocated.
+        """
+
+        for attempt in range(self._SEQ_RETRIES):
+            try:
+                with self.db.engine.begin() as conn:
+                    row = conn.execute(
+                        select(func.max(t.events.c.seq)).where(t.events.c.run_id == run_id)
+                    ).first()
+                    seq = ((row[0] if row else 0) or 0) + 1
+                    conn.execute(
+                        insert(t.events).values(
+                            id=event_id,
+                            run_id=run_id,
+                            seq=seq,
+                            type=type_,
+                            timestamp=timestamp,
+                            source=source,
+                        )
+                    )
+                return seq
+            except IntegrityError:
+                # Either we lost the (run_id, seq) race, or this event id is genuinely a duplicate.
+                # Only the former is retryable: re-inserting a duplicate id would spin until the
+                # budget ran out and then report a misleading "contention" failure.
+                if self._event_exists(event_id) or attempt == self._SEQ_RETRIES - 1:
+                    raise
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    def _event_exists(self, event_id: str) -> bool:
+        with self.db.engine.connect() as conn:
+            row = conn.execute(select(t.events.c.id).where(t.events.c.id == event_id)).first()
+        return row is not None
+
+    def sequences_for(self, run_id: str) -> list[int]:
+        """Every indexed sequence number for a run, in order. For recovery checks and tests."""
+
+        with self.db.engine.connect() as conn:
+            rows = conn.execute(
+                select(t.events.c.seq).where(t.events.c.run_id == run_id).order_by(t.events.c.seq)
+            ).all()
+        return [r[0] for r in rows]
 
     def count(self, run_id: str) -> int:
         with self.db.engine.connect() as conn:
