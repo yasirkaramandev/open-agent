@@ -20,7 +20,14 @@ from ..app import OpenAgentApp
 from ..core.events import NormalizedEvent
 from ..core.models import Protocol, RuntimeType, enum_value
 from ..core.permissions import profile_names
-from ..providers.discovery import PROBE_VERIFIED, filter_models, looks_non_chat
+from ..providers.discovery import (
+    PROBE_NOT_FOUND,
+    PROBE_RATE_LIMITED,
+    PROBE_UNAUTHORIZED,
+    PROBE_VERIFIED,
+    filter_models,
+    looks_non_chat,
+)
 from ..providers.factory import PRESETS, get_preset, preset_names
 from ..services.agent_service import AgentError
 from ..services.provider_service import ProviderInUseError, ProviderValidationError
@@ -553,6 +560,9 @@ def _print_probe(name: str, model: str, *, json_out: bool, refresh: bool) -> Non
         console.print(f"  tool calling: {mark[caps.tool_calling]}")
         colour = "green" if probe.agent_compatible else "yellow"
         console.print(f"  [{colour}]{safe_markup(probe.message())}[/{colour}]")
+        remedy = _probe_remedy(oa, name, probe.category)
+        if remedy:
+            console.print(f"  [dim]{safe_markup(remedy)}[/dim]")
         if probe.detail:
             console.print(f"  [dim]{safe_markup(probe.detail, 300)}[/dim]")
     if not probe.agent_compatible:
@@ -562,6 +572,26 @@ def _print_probe(name: str, model: str, *, json_out: bool, refresh: bool) -> Non
 def _provider_type(oa: OpenAgentApp, name: str) -> str:
     provider = oa.providers.get(name)
     return provider.provider_type if provider else ""
+
+
+def _probe_remedy(oa: OpenAgentApp, name: str, category: str) -> str:
+    """Provider-specific next step for a failed probe (spec §18).
+
+    The probe's own verdict is provider-neutral (it is shared by every adapter); this adds the one
+    concrete action the user can take, using the preset's published URLs rather than a hardcoded
+    vendor string. Never includes the key or the request body.
+    """
+
+    preset = get_preset(_provider_type(oa, name))
+    if preset is None:
+        return ""
+    if category == PROBE_UNAUTHORIZED and preset.catalog_url:
+        return f"Generate or replace the key at {preset.catalog_url}"
+    if category == PROBE_NOT_FOUND:
+        return f"Refresh the catalog: openagent provider models {name}"
+    if category == PROBE_RATE_LIMITED:
+        return "Wait and retry, or check your quota with the provider."
+    return ""
 
 
 @provider_app.command("remove")
