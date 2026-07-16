@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from openagent.workspaces.worktree import WorktreeManager, is_git_repo
+from openagent.workspaces.worktree import GitError, WorktreeManager, is_git_repo
 
 
 def _git(args, cwd):
@@ -105,3 +105,16 @@ def test_unknown_strategy_rejected(tmp_path: Path):
     mgr = WorktreeManager(root, root / ".openagent" / "worktrees")
     with pytest.raises(ValueError, match="unknown worktree strategy"):
         mgr.create("run_x", strategy="bogus")
+
+
+def test_discard_refuses_when_ownership_metadata_is_missing(tmp_path: Path):
+    root = tmp_path / "plain"
+    root.mkdir()
+    (root / "file.txt").write_text("user data")
+    mgr = WorktreeManager(root, root / ".openagent" / "worktrees")
+    ws = mgr.create("run_owned", strategy="copy")
+    mgr._owner_marker(ws.run_id).unlink()  # noqa: SLF001 - simulate missing ownership proof
+
+    with pytest.raises(GitError, match="ownership metadata missing"):
+        mgr.discard(ws)
+    assert (ws.root / "file.txt").read_text() == "user data"

@@ -6,13 +6,12 @@ between two markers so regeneration never disturbs hand-written prose around it.
 
 from __future__ import annotations
 
-import os
-import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
 from ..config import OPENAGENT_MD_END, OPENAGENT_MD_START
 from ..core.models import AgentProfile
+from ..security.atomic import atomic_write_text
 
 _HEADER = """\
 # OpenAgent
@@ -98,22 +97,7 @@ def write_openagent_md(path: Path, agents: Sequence[AgentProfile]) -> None:
             content = before + block + after
     if content is None:
         content = render_document(agents)
-    _atomic_write(path, content)
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".openagent-md-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(content)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:  # pragma: no cover - best effort cleanup
-            pass
-        raise
+    atomic_write_text(path, content, mode=0o600)
 
 
 def _runtime_label(agent: AgentProfile) -> str:

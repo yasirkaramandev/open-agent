@@ -9,11 +9,15 @@ into their native tool-calling format) and exposes:
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from jsonschema import ValidationError, validate
+
 from ..core.events import ToolCall
+from ..core.limits import RUNTIME_LIMITS
 from ..core.permissions import PermissionProfile
 from . import control, fs, git
 from . import exec as exec_tools
@@ -35,11 +39,19 @@ class Tool:
 
 
 def _obj(props: dict[str, Any], required: list[str]) -> dict[str, Any]:
-    return {"type": "object", "properties": props, "required": required}
+    return {
+        "type": "object",
+        "properties": props,
+        "required": required,
+        "additionalProperties": False,
+    }
 
 
-_STR = {"type": "string"}
-_INT = {"type": "integer"}
+_STR = {"type": "string", "maxLength": 65_536}
+_PATH = {"type": "string", "minLength": 1, "maxLength": 4_096}
+_CONTENT = {"type": "string", "maxLength": RUNTIME_LIMITS.model_text_bytes}
+_INT = {"type": "integer", "minimum": 0, "maximum": 50_000}
+_TIMEOUT = {"type": "integer", "minimum": 1, "maximum": 3_600}
 _BOOL = {"type": "boolean"}
 
 
@@ -47,13 +59,13 @@ ALL_TOOLS: dict[str, Tool] = {
     "list_files": Tool(
         "list_files",
         "List files under a directory (workspace-relative).",
-        _obj({"path": _STR, "depth": _INT}, []),
+        _obj({"path": _PATH, "depth": {"type": "integer", "minimum": 0, "maximum": 64}}, []),
         fs.list_files,
     ),
     "read_file": Tool(
         "read_file",
         "Read a UTF-8 text file (workspace-relative path).",
-        _obj({"path": _STR}, ["path"]),
+        _obj({"path": _PATH}, ["path"]),
         fs.read_file,
     ),
     "search_files": Tool(
@@ -71,14 +83,19 @@ ALL_TOOLS: dict[str, Tool] = {
     "write_file": Tool(
         "write_file",
         "Write/overwrite a file with full content. Prefer apply_patch for edits.",
-        _obj({"path": _STR, "content": _STR}, ["path", "content"]),
+        _obj({"path": _PATH, "content": _CONTENT}, ["path", "content"]),
         fs.write_file,
     ),
     "apply_patch": Tool(
         "apply_patch",
         "Replace a unique old_string with new_string in a file (targeted, reviewable edit).",
         _obj(
-            {"path": _STR, "old_string": _STR, "new_string": _STR, "replace_all": _BOOL},
+            {
+                "path": _PATH,
+                "old_string": _CONTENT,
+                "new_string": _CONTENT,
+                "replace_all": _BOOL,
+            },
             ["path", "old_string", "new_string"],
         ),
         fs.apply_patch,
@@ -86,20 +103,30 @@ ALL_TOOLS: dict[str, Tool] = {
     "run_command": Tool(
         "run_command",
         "Run a shell command in the workspace (screened by the command policy).",
-        _obj({"command": _STR, "timeout": _INT}, ["command"]),
+        _obj({"command": _STR, "timeout": _TIMEOUT}, ["command"]),
         exec_tools.run_command,
     ),
     "run_tests": Tool(
         "run_tests",
-        "Run the test suite (default: 'pytest -q').",
-        _obj({"command": _STR, "timeout": _INT}, []),
+        "Run tests from structured argv (default: ['pytest', '-q']).",
+        _obj(
+            {
+                "argv": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1, "maxLength": 4_096},
+                    "maxItems": 256,
+                },
+                "timeout": _TIMEOUT,
+            },
+            [],
+        ),
         exec_tools.run_tests,
     ),
     "git_status": Tool("git_status", "Show git status (short).", _obj({}, []), git.git_status),
     "git_diff": Tool(
         "git_diff",
         "Show the git diff, optionally for one path.",
-        _obj({"path": _STR}, []),
+        _obj({"path": _PATH}, []),
         git.git_diff,
     ),
     "ask_user": Tool(
@@ -117,6 +144,7 @@ ALL_TOOLS: dict[str, Tool] = {
                 "items": {
                     "type": "array",
                     "items": _obj({"text": _STR, "completed": _BOOL}, ["text"]),
+                    "maxItems": 100,
                 }
             },
             ["items"],
@@ -159,6 +187,19 @@ class ToolExecutor:
             return ToolResult.failure(f"unknown tool: {call.name}")
         if tool.name not in self.ctx.profile.allowed_tools:
             return ToolResult.failure(f"tool {call.name!r} is not permitted by this profile")
+        try:
+            encoded = json.dumps(call.arguments, ensure_ascii=False).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            return ToolResult.failure(f"invalid arguments for {call.name}: {exc}")
+        if len(encoded) > RUNTIME_LIMITS.tool_arguments_bytes:
+            return ToolResult.failure(
+                f"invalid arguments for {call.name}: exceeds "
+                f"{RUNTIME_LIMITS.tool_arguments_bytes} bytes"
+            )
+        try:
+            validate(instance=call.arguments, schema=tool.parameters)
+        except ValidationError as exc:
+            return ToolResult.failure(f"invalid arguments for {call.name}: {exc.message}")
         try:
             return tool.handler(self.ctx, **call.arguments)
         except ToolError as exc:

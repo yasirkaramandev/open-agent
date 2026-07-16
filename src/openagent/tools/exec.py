@@ -15,9 +15,11 @@ runs after an explicit approval (the policy returns ``APPROVAL``).
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Sequence
 
-from ..security.command_policy import Decision, Purpose, evaluate
-from ..security.process import OutputLimitExceeded, minimal_environment, run_capture
+from ..security.command_policy import Decision, Purpose, evaluate, evaluate_test_argv
+from ..security.execution_backend import ExecutionBackendError, HostRestrictedBackend
+from ..security.process import OutputLimitExceeded, minimal_environment
 from .base import ToolContext, ToolError, ToolResult
 
 #: A hard **byte** cap on a single command's combined stdout+stderr (item 9.3). Enforced inside
@@ -27,33 +29,40 @@ _DEFAULT_TIMEOUT = 300
 
 
 def _run(
-    ctx: ToolContext, command: str, timeout: int, purpose: Purpose = Purpose.COMMAND
+    ctx: ToolContext, command: str | Sequence[str], timeout: int, purpose: Purpose = Purpose.COMMAND
 ) -> subprocess.CompletedProcess[str]:
     # The policy needs the profile AND the workspace to decide: without them it cannot tell an
     # unattended-safe inspection from an interpreter, or a workspace path from /etc/passwd (spec §2).
-    policy = evaluate(
-        command,
-        network_allowed=ctx.profile.network_allowed,
-        workspace_root=ctx.workspace_root,
-        profile=ctx.profile,
-        purpose=purpose,
+    structured = not isinstance(command, str)
+    display = command if isinstance(command, str) else " ".join(command)
+    policy = (
+        evaluate_test_argv(tuple(command), workspace_root=ctx.workspace_root, profile=ctx.profile)
+        if structured and purpose is Purpose.TEST
+        else evaluate(
+            display,
+            network_allowed=ctx.profile.network_allowed,
+            workspace_root=ctx.workspace_root,
+            profile=ctx.profile,
+            purpose=purpose,
+        )
     )
     if policy.decision is Decision.DENY:
         raise ToolError(f"command denied by policy: {policy.reason}")
     if policy.decision is Decision.APPROVAL:
-        detail = f"{command}\n({policy.reason})"
-        if not ctx.request_approval("run_command", detail, command=command, reason=policy.reason):
+        detail = f"{display}\n({policy.reason})"
+        if not ctx.request_approval("run_command", detail, command=display, reason=policy.reason):
             raise ToolError(f"command not approved: {policy.reason}")
     if ctx.emit:
-        ctx.emit("command.started", {"command": command, "cwd": str(ctx.workspace_root)})
+        ctx.emit("command.started", {"command": display, "cwd": str(ctx.workspace_root)})
 
     # Minimal environment only: the parent env (and any secrets in it) is never inherited. A run may
     # inject specific credentials via ``ctx.command_env`` for one operation; nothing else leaks.
     env = minimal_environment(ctx.command_env)
     # ``shell=False`` with the screened argv unless approval was granted for a shell-operator command.
-    argv: list[str] | str = command if policy.needs_shell else list(policy.argv)
+    argv: list[str] | str = display if policy.needs_shell else list(policy.argv)
     try:
-        return run_capture(
+        backend = ctx.execution_backend or HostRestrictedBackend()
+        return backend.execute(
             argv,
             cwd=ctx.workspace_root,
             env=env,
@@ -69,6 +78,8 @@ def _run(
         raise ToolError(f"command output exceeded {_MAX_OUTPUT_BYTES} bytes") from exc
     except FileNotFoundError as exc:
         raise ToolError(f"executable not found: {exc}") from exc
+    except ExecutionBackendError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 def run_command(ctx: ToolContext, command: str, timeout: int = _DEFAULT_TIMEOUT) -> ToolResult:
@@ -85,14 +96,16 @@ def run_command(ctx: ToolContext, command: str, timeout: int = _DEFAULT_TIMEOUT)
 
 
 def run_tests(
-    ctx: ToolContext, command: str = "pytest -q", timeout: int = _DEFAULT_TIMEOUT
+    ctx: ToolContext, argv: list[str] | None = None, timeout: int = _DEFAULT_TIMEOUT
 ) -> ToolResult:
     if not ctx.profile.can_run_commands:
         raise ToolError("this permission profile does not allow running commands")
     # Purpose.TEST opens the structured test/build runner list (spec §2.3) — and only that list.
     # "Run the project's tests" genuinely executes project code, so it is an explicit, named
     # capability rather than something a generic run_command can reach unattended.
-    proc = _run(ctx, command, timeout, purpose=Purpose.TEST)
+    test_argv = argv or ["pytest", "-q"]
+    proc = _run(ctx, test_argv, timeout, purpose=Purpose.TEST)
+    command = " ".join(test_argv)
     output = ((proc.stdout or "") + (proc.stderr or ""))[:_MAX_OUTPUT_BYTES]
     passed = proc.returncode == 0
     if ctx.emit:

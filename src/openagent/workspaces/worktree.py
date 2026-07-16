@@ -15,11 +15,16 @@ files and a unified diff are computed by comparing the workspace to the untouche
 from __future__ import annotations
 
 import difflib
+import json
 import os
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+from ..core.limits import RUNTIME_LIMITS
+from ..security.atomic import atomic_write_text
+from ..security.filesystem import SafeWorkspaceWalker, UnsafeWorkspacePath, safe_rmtree
 
 _IGNORE_DIRS = {
     ".git",
@@ -33,7 +38,7 @@ _IGNORE_DIRS = {
     "dist",
     "build",
 }
-_MAX_DIFF_BYTES = 400_000
+_MAX_DIFF_BYTES = RUNTIME_LIMITS.diff_bytes
 
 AUTO = "auto"
 NONE = "none"
@@ -143,8 +148,9 @@ def _untracked_files(root: Path) -> list[str]:
 def _untracked_diff(root: Path, rel: str) -> str:
     """A diff for one untracked file via ``--no-index`` (compares paths; never uses the index)."""
 
-    target = root / rel
-    if not target.is_file():
+    try:
+        SafeWorkspaceWalker(root).read_bytes(rel, max_bytes=1)
+    except (OSError, UnsafeWorkspacePath):
         return ""
     try:
         # --no-index exits 1 when the files differ, which is the normal case here, so the non-zero
@@ -273,7 +279,7 @@ class WorktreeManager:
         branch = f"openagent/{run_id}"
         target = self.worktrees_dir / run_id
         _git(["worktree", "add", "-b", branch, str(target), base_commit], self.project_root)
-        return Workspace(
+        workspace = Workspace(
             run_id=run_id,
             root=target,
             source=self.project_root,
@@ -282,18 +288,17 @@ class WorktreeManager:
             branch=branch,
             base_commit=base_commit,
         )
+        self._record_ownership(workspace)
+        return workspace
 
     def _copy_workspace(self, run_id: str, git: bool) -> Workspace:
         target = self.worktrees_dir / run_id
         if target.exists():
-            shutil.rmtree(target)
-        shutil.copytree(
-            self.project_root,
-            target,
-            ignore=shutil.ignore_patterns(*_IGNORE_DIRS),
-        )
+            safe_rmtree(target, owner_root=self.worktrees_dir)
+        target.mkdir(parents=True)
+        SafeWorkspaceWalker(self.project_root).copy_to(target, ignore_dirs=_IGNORE_DIRS)
         # The working copy is the "after"; an immutable baseline snapshot is the "before".
-        return Workspace(
+        workspace = Workspace(
             run_id=run_id,
             root=target,
             source=self.project_root,
@@ -302,19 +307,50 @@ class WorktreeManager:
             is_copy=True,
             baseline_dir=self._make_baseline(run_id),
         )
+        self._record_ownership(workspace)
+        return workspace
 
     def _make_baseline(self, run_id: str) -> Path:
         """Copy the untouched source tree into an immutable baseline snapshot dir (item 5)."""
 
         baseline = self.worktrees_dir / f"{run_id}__baseline"
         if baseline.exists():
-            shutil.rmtree(baseline)
-        shutil.copytree(
-            self.project_root,
-            baseline,
-            ignore=shutil.ignore_patterns(*_IGNORE_DIRS),
-        )
+            safe_rmtree(baseline, owner_root=self.worktrees_dir)
+        baseline.mkdir(parents=True)
+        SafeWorkspaceWalker(self.project_root).copy_to(baseline, ignore_dirs=_IGNORE_DIRS)
         return baseline
+
+    def _owner_marker(self, run_id: str) -> Path:
+        return self.worktrees_dir / f".{run_id}.owner.json"
+
+    def _record_ownership(self, ws: Workspace) -> None:
+        marker = {
+            "owner": "openagent",
+            "run_id": ws.run_id,
+            "root": str(ws.root.absolute()),
+            "branch": ws.branch,
+            "strategy": ws.strategy,
+        }
+        atomic_write_text(self._owner_marker(ws.run_id), json.dumps(marker), mode=0o600)
+
+    def _verify_ownership(self, ws: Workspace) -> Path:
+        marker_path = self._owner_marker(ws.run_id)
+        try:
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise GitError(f"ownership metadata missing for {ws.root}") from exc
+        expected = {
+            "owner": "openagent",
+            "run_id": ws.run_id,
+            "root": str(ws.root.absolute()),
+            "branch": ws.branch,
+            "strategy": ws.strategy,
+        }
+        if marker != expected:
+            raise GitError(f"ownership metadata does not match {ws.root}")
+        if ws.branch and not ws.branch.startswith("openagent/"):
+            raise GitError(f"refused cleanup of non-OpenAgent branch {ws.branch}")
+        return marker_path
 
     # ------------------------------------------------------------------ inspection
 
@@ -354,20 +390,14 @@ class WorktreeManager:
         import hashlib
 
         snap: dict[str, str] = {}
-        for path in self._walk(root):
+        walker = SafeWorkspaceWalker(root)
+        for path in walker.iter_files(ignore_dirs=_IGNORE_DIRS):
             try:
-                snap[str(path.relative_to(root))] = hashlib.sha1(path.read_bytes()).hexdigest()
-            except OSError:  # pragma: no cover - unreadable file
+                relative = path.relative_to(root)
+                snap[str(relative)] = hashlib.sha1(walker.read_bytes(relative)).hexdigest()
+            except (OSError, UnsafeWorkspacePath):  # pragma: no cover - unreadable file
                 continue
         return snap
-
-    def _walk(self, root: Path):
-        import os
-
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if d not in _IGNORE_DIRS]
-            for name in filenames:
-                yield Path(dirpath) / name
 
     def _compare(self, ws: Workspace) -> tuple[list[str], list[str], list[str]]:
         """Return (changed, created, deleted) relative paths for a copy/in-place run.
@@ -391,10 +421,8 @@ class WorktreeManager:
         before_root = ws.baseline_dir or ws.source
         chunks: list[str] = []
         for rel in changed:
-            src = before_root / rel
-            dst = ws.root / rel
-            before = _read_text(src) if rel not in created else ""
-            after = _read_text(dst) if rel not in deleted else ""
+            before = _read_text(before_root, rel) if rel not in created else ""
+            after = _read_text(ws.root, rel) if rel not in deleted else ""
             if before is None or after is None:  # binary; note the change without a body
                 chunks.append(f"Binary file {rel} changed\n")
                 continue
@@ -415,30 +443,36 @@ class WorktreeManager:
         The immutable baseline snapshot (if any) is always cleaned up too.
         """
 
-        if ws.baseline_dir and ws.baseline_dir.exists():
-            shutil.rmtree(ws.baseline_dir, ignore_errors=True)
         if ws.in_place:
+            if ws.baseline_dir and ws.baseline_dir.exists():
+                safe_rmtree(ws.baseline_dir, owner_root=self.worktrees_dir)
             return
+        marker = self._verify_ownership(ws)
+        if ws.baseline_dir and ws.baseline_dir.exists():
+            safe_rmtree(ws.baseline_dir, owner_root=self.worktrees_dir)
         if ws.is_copy:
             if ws.root.exists():
-                shutil.rmtree(ws.root, ignore_errors=True)
+                safe_rmtree(ws.root, owner_root=self.worktrees_dir)
+            marker.unlink(missing_ok=True)
             return
         try:
             _git(["worktree", "remove", "--force", str(ws.root)], self.project_root)
         except GitError:
             if ws.root.exists():
-                shutil.rmtree(ws.root, ignore_errors=True)
+                safe_rmtree(ws.root, owner_root=self.worktrees_dir)
         if ws.branch:
             try:
                 _git(["branch", "-D", ws.branch], self.project_root)
             except GitError:
                 pass
+        marker.unlink(missing_ok=True)
 
     def commit_all(self, ws: Workspace, message: str) -> str | None:
         """Commit everything in the worktree; returns the new commit sha (git worktree only)."""
 
         if not ws.is_git or ws.is_copy or ws.in_place:
             return None
+        self._verify_ownership(ws)
         _git(["add", "-A"], ws.root)
         status = _git(["status", "--porcelain"], ws.root)
         if not status.strip():
@@ -447,8 +481,8 @@ class WorktreeManager:
         return _git(["rev-parse", "HEAD"], ws.root).strip()
 
 
-def _read_text(path: Path) -> str | None:
+def _read_text(root: Path, relative: str) -> str | None:
     try:
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+        return SafeWorkspaceWalker(root).read_bytes(relative).decode("utf-8")
+    except (OSError, UnicodeDecodeError, UnsafeWorkspacePath):
         return None

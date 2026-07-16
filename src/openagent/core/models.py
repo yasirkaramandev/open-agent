@@ -51,6 +51,7 @@ TERMINAL_STATUSES = {
     RunStatus.COMPLETED,
     RunStatus.FAILED,
     RunStatus.CANCELLED,
+    RunStatus.ORPHANED,
 }
 
 
@@ -314,6 +315,13 @@ class Run(BaseModel):
     #: rows, but new processes always persist this structure and cross-process termination requires
     #: all four fields.
     process_identity: ProcessIdentity | None = None
+    #: Command/tool execution boundary. host-restricted is a policy boundary; container-sandbox is
+    #: an explicit no-network container with a copied workspace and no host mounts.
+    execution_backend: str = "host-restricted"
+    container_runtime: str | None = None
+    container_image: str | None = None
+    artifact_integrity: dict[str, str] = Field(default_factory=dict)
+    agent_commit_sha: str | None = None
     #: Worktree isolation strategy actually used: ``auto`` | ``none`` | ``copy``.
     worktree_strategy: str = "auto"
     #: Workspace metadata persisted so a resume reconstructs the exact same diff baseline (item 5).

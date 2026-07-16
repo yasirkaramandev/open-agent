@@ -27,13 +27,14 @@ from pathlib import Path
 import psutil
 
 from ..core.cancellation import RunCancellation, RunCancelled
+from ..core.limits import RUNTIME_LIMITS
 from ..core.models import ProcessIdentity
 
 IS_WINDOWS = sys.platform.startswith("win")
 
 #: How much of a child's stderr to retain, as a ring buffer keeping the **tail** (§13). The last few
 #: KB is what actually diagnoses a failure; everything before it is noise a crash loop produced.
-MAX_STDERR_BYTES = 64_000
+MAX_STDERR_BYTES = RUNTIME_LIMITS.cli_stderr_bytes
 _STDERR_CHUNK = 8192
 #: How long to let the stderr reader finish after stdout closes, before cancelling it.
 _STDERR_DRAIN_GRACE = 5.0

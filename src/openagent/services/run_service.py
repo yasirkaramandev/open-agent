@@ -41,6 +41,12 @@ from ..runtimes.api_agent.loop import run_api_agent
 from ..runtimes.cli.base import CliAdapter, CliRunRequest
 from ..runtimes.cli.registry import build_cli_adapter
 from ..security.approvals import ApprovalCallback, ApprovalGate
+from ..security.execution_backend import (
+    CONTAINER_SANDBOX,
+    EXECUTION_BACKENDS,
+    ExecutionBackendError,
+    build_execution_backend,
+)
 from ..security.process import (
     PID_ALIVE,
     TerminationOutcome,
@@ -186,6 +192,9 @@ class RunService:
         worktree: str = "auto",
         permission_profile: str | None = None,
         confirm_in_place: bool = False,
+        execution_backend: str = "host-restricted",
+        container_runtime: str | None = None,
+        container_image: str | None = None,
     ) -> Run:
         agent = self.repos.agents.get(agent_name)
         if not agent:
@@ -194,6 +203,15 @@ class RunService:
         prof = get_profile(profile)  # validate
         if worktree not in STRATEGIES:
             raise RunError(f"unknown worktree strategy {worktree!r}; choose from {STRATEGIES}")
+        if execution_backend not in EXECUTION_BACKENDS:
+            raise RunError(
+                f"unknown execution backend {execution_backend!r}; choose from {EXECUTION_BACKENDS}"
+            )
+        if execution_backend == CONTAINER_SANDBOX:
+            if worktree == NONE:
+                raise RunError("container-sandbox refuses worktree 'none'")
+            if not container_image:
+                raise RunError("container-sandbox requires --container-image with a local image")
         if worktree == NONE and prof.can_edit_files and not confirm_in_place:
             raise RunError(
                 "worktree 'none' runs a file-editing agent directly in your project with no "
@@ -215,6 +233,9 @@ class RunService:
             project_root=str(root),
             project_state_dir=str(self.paths.project_state_dir),
             artifact_dir=str(self.paths.run_dir(run_id)),
+            execution_backend=execution_backend,
+            container_runtime=container_runtime,
+            container_image=container_image,
         )
         self.repos.runs.upsert(run)
         return run
@@ -699,6 +720,17 @@ class RunService:
                 etype = EventType.LOG
             sink(NormalizedEvent(run_id=run.id, type=etype, source="api-agent", data=data))
 
+        try:
+            execution_backend = build_execution_backend(
+                run.execution_backend,
+                workspace=root,
+                container_image=run.container_image,
+                container_runtime=run.container_runtime,
+                worktree_strategy=run.worktree_strategy,
+            )
+            execution_backend.validate()
+        except ExecutionBackendError as exc:
+            raise _typed(exc, "execution_backend_unavailable") from exc
         ctx = ToolContext(
             workspace_root=root,
             profile=profile,
@@ -714,6 +746,7 @@ class RunService:
             # A blocking command (run_command/run_tests) polls this so a Cancel kills its process
             # tree mid-run instead of waiting for it to finish (item 9.2).
             cancellation=cancel,
+            execution_backend=execution_backend,
         )
         executor = ToolExecutor(ctx)
         try:
@@ -1252,19 +1285,28 @@ class RunService:
         if not result.verified_terminated:  # raced between the check above and the signal
             return _cancel_outcome(result)
         self._cancelled.add(run.id)
-        self._record_orphan_terminated(run)
         self._persist_cancelled(run, reason, "orphaned_process_terminated_by_user")
         return CancelOutcome.TERMINATED
 
-    def _persist_cancelled(self, run: Run, reason: str, failure_type: str) -> None:
+    def _persist_cancelled(self, run: Run, reason: str, failure_type: str) -> bool:
         """Append the single terminal ``run.cancelled`` (last), then persist status + artifact.
 
         The audit/termination log (if any) is written before this, so ``run.cancelled`` stays the
         final semantic event and the projection settles on ``cancelled`` (item 1).
         """
 
+        previous = run.status
+        run.status = RunStatus.CANCELLED
+        run.phase = RunPhase.CANCELLED.value
+        run.completed_at = _now()
+        run.failure_type = failure_type
+        if not self.repos.runs.compare_and_set_transition(run, expected={previous}):
+            return False
+
         run_dir = self.run_dir_for(run)
         if run_dir.exists():
+            if failure_type == "orphaned_process_terminated_by_user":
+                self._record_orphan_terminated(run)
             with contextlib.suppress(OSError):
                 EventLog(run_dir, index=self.repos.event_index).append(
                     NormalizedEvent(
@@ -1274,14 +1316,10 @@ class RunService:
                         data={"reason": reason},
                     )
                 )
-        run.status = RunStatus.CANCELLED
-        run.phase = RunPhase.CANCELLED.value
-        run.completed_at = _now()
-        run.failure_type = failure_type
-        self.repos.runs.upsert(run)
         if run_dir.exists():
             with contextlib.suppress(OSError):
                 ArtifactWriter(run_dir).write_status(run)
+        return True
 
     def _record_orphan_terminated(self, run: Run) -> None:
         """Audit that the orphaned live process *was* terminated by the user (mirror of the note the
@@ -1341,15 +1379,18 @@ class RunService:
             if run.id in self._cli_adapters or self.cancellations.get(run.id) is not None:
                 continue
             status = process_identity_status(run.process_identity)
+            record_live = status == PID_ALIVE
             if status == PID_ALIVE:
                 run.failure_type = run.failure_type or "orphaned_unattached_process"
-                self._record_orphan_event(run, status)
             else:
                 run.failure_type = run.failure_type or f"orphaned_pid_{status}"
+            previous = run.status
             run.status = RunStatus.ORPHANED
             run.completed_at = _now()
-            self.repos.runs.upsert(run)
-            recovered.append(run.id)
+            if self.repos.runs.compare_and_set_transition(run, expected={previous}):
+                if record_live:
+                    self._record_orphan_event(run, status)
+                recovered.append(run.id)
         return recovered
 
     def _record_orphan_event(self, run: Run, status: str) -> None:

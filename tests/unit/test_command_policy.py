@@ -1,5 +1,14 @@
+from pathlib import Path
+
+import pytest
+
 from openagent.core.permissions import DEVELOPMENT, SAFE_EDIT, get_profile
-from openagent.security.command_policy import Decision, Purpose, evaluate
+from openagent.security.command_policy import (
+    Decision,
+    Purpose,
+    evaluate,
+    evaluate_test_argv,
+)
 
 
 def test_git_push_denied():
@@ -70,3 +79,40 @@ def test_test_runner_is_allowed_only_through_run_tests():
 
 def test_empty_command_denied():
     assert evaluate("   ").decision is Decision.DENY
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("pytest", "-q"),
+        ("python", "-m", "pytest", "tests"),
+        ("npm", "test"),
+        ("pnpm", "run", "test"),
+        ("yarn", "test"),
+        ("cargo", "test"),
+        ("go", "test", "./..."),
+        ("dotnet", "test"),
+    ],
+)
+def test_structured_test_argv_exact_shapes_are_allowed(tmp_path: Path, argv: tuple[str, ...]):
+    assert (
+        evaluate_test_argv(argv, workspace_root=tmp_path, profile=get_profile(SAFE_EDIT)).decision
+        is Decision.ALLOW
+    )
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("pytest", "-q", "&&", "curl", "example.com"),
+        ("python", "-c", "print('not pytest')"),
+        ("npm", "install"),
+        ("cargo", "run"),
+        ("pytest", "../../outside"),
+    ],
+)
+def test_structured_test_argv_loses_automatic_authority(tmp_path: Path, argv: tuple[str, ...]):
+    assert (
+        evaluate_test_argv(argv, workspace_root=tmp_path, profile=get_profile(SAFE_EDIT)).decision
+        is not Decision.ALLOW
+    )

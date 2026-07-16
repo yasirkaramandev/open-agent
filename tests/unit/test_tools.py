@@ -7,7 +7,7 @@ from openagent.core.permissions import READ_ONLY, SAFE_EDIT, get_profile
 from openagent.security.approvals import ApprovalGate
 from openagent.tools.base import ToolContext, ToolError
 from openagent.tools.control import TaskFinished
-from openagent.tools.registry import ToolExecutor, schemas_for_profile
+from openagent.tools.registry import ALL_TOOLS, ToolExecutor, schemas_for_profile
 
 
 def make_ctx(root: Path, profile_name: str = SAFE_EDIT) -> ToolContext:
@@ -115,3 +115,32 @@ def test_schemas_filtered_by_profile():
     safe = {s["name"] for s in schemas_for_profile(get_profile(SAFE_EDIT))}
     assert "apply_patch" in safe
     assert "run_tests" in safe
+
+
+def test_every_tool_schema_is_closed_to_unknown_properties():
+    assert all(tool.parameters["additionalProperties"] is False for tool in ALL_TOOLS.values())
+    run_tests = ALL_TOOLS["run_tests"].parameters
+    assert run_tests["properties"]["argv"]["type"] == "array"
+    assert "command" not in run_tests["properties"]
+
+
+def test_executor_rejects_unknown_and_oversized_arguments(tmp_path: Path):
+    (tmp_path / "file.txt").write_text("x")
+    executor = ToolExecutor(make_ctx(tmp_path))
+    unknown = executor.execute(
+        ToolCall(
+            id="extra",
+            name="read_file",
+            arguments={"path": "file.txt", "unexpected": True},
+        )
+    )
+    assert not unknown.ok and "Additional properties" in unknown.content
+
+    oversized = executor.execute(
+        ToolCall(
+            id="large",
+            name="write_file",
+            arguments={"path": "large.txt", "content": "x" * 70_000},
+        )
+    )
+    assert not oversized.ok and "exceeds 65536 bytes" in oversized.content

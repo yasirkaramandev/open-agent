@@ -5,11 +5,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..core.cancellation import RunCancellation
 from ..core.permissions import PermissionProfile
 from ..security.approvals import ApprovalGate, ApprovalRequest
+from ..security.filesystem import SafeWorkspaceWalker, UnsafeWorkspacePath
+
+if TYPE_CHECKING:
+    from ..security.execution_backend import ExecutionBackend
 
 
 class ToolError(Exception):
@@ -59,6 +63,7 @@ class ToolContext:
     #: ``run_tests``) polls it so a Cancel kills the whole process tree *while the command is still
     #: running* — not only after it exits. ``None`` in contexts without a live run (unit tests).
     cancellation: RunCancellation | None = None
+    execution_backend: ExecutionBackend | None = None
 
     def request_approval(
         self, action: str, detail: str, *, command: str = "", reason: str = ""
@@ -80,10 +85,10 @@ class ToolContext:
         tests). Returns an absolute path guaranteed to live under ``workspace_root``.
         """
 
-        root = self.workspace_root.resolve()
-        candidate = (root / relative).resolve()
         try:
-            candidate.relative_to(root)
-        except ValueError as exc:
-            raise ToolError(f"path {relative!r} escapes the workspace") from exc
-        return candidate
+            return self.walker().resolve(relative, allow_missing=True)
+        except (UnsafeWorkspacePath, OSError) as exc:
+            raise ToolError(f"unsafe workspace path {relative!r}: {exc}") from exc
+
+    def walker(self) -> SafeWorkspaceWalker:
+        return SafeWorkspaceWalker(self.workspace_root, cancellation=self.cancellation)

@@ -232,6 +232,15 @@ def run(
     prompt: str = typer.Option(..., "--prompt", "-p"),
     worktree: str = typer.Option("auto", "--worktree", help="auto | none | copy"),
     profile: str | None = typer.Option(None, "--profile"),
+    execution_backend: str = typer.Option(
+        "host-restricted", "--execution-backend", help="host-restricted | container-sandbox"
+    ),
+    container_runtime: str | None = typer.Option(
+        None, "--container-runtime", help="docker | podman (auto-detected when omitted)"
+    ),
+    container_image: str | None = typer.Option(
+        None, "--container-image", help="Required local image for container-sandbox"
+    ),
     yes: bool = typer.Option(
         False,
         "--yes",
@@ -252,6 +261,9 @@ def run(
             worktree=worktree,
             permission_profile=profile,
             confirm_in_place=yes,
+            execution_backend=execution_backend,
+            container_runtime=container_runtime,
+            container_image=container_image,
         )
     except RunError as exc:
         _fail(str(exc))

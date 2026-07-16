@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import func, insert, or_, select
+from sqlalchemy import func, insert, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from ..core.models import (
@@ -18,6 +18,7 @@ from ..core.models import (
     ModelProfile,
     ProviderConnection,
     Run,
+    RunStatus,
     Session,
 )
 from . import db as t
@@ -200,6 +201,48 @@ class RunRepository:
                     data=run.model_dump(mode="json"),
                 )
             )
+
+    @staticmethod
+    def _values(run: Run) -> dict:
+        return {
+            "agent": run.agent,
+            "status": run.status.value,
+            "workspace": run.workspace,
+            "worktree": run.worktree,
+            "provider_session_id": run.provider_session_id,
+            "started_at": run.started_at.isoformat(),
+            "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+            "exit_code": run.exit_code,
+            "failure_type": run.failure_type,
+            "project_id": run.project_id,
+            "project_root": run.project_root,
+            "project_state_dir": run.project_state_dir,
+            "artifact_dir": run.artifact_dir,
+            "data": run.model_dump(mode="json"),
+        }
+
+    def compare_and_set_transition(
+        self,
+        run: Run,
+        *,
+        expected: set[RunStatus | str],
+    ) -> bool:
+        """Atomically persist ``run`` only if its current status is expected and transition-valid."""
+
+        from ..core.lifecycle import validate_expected
+
+        validate_expected(expected, run.status)
+        expected_values = {
+            value.value if isinstance(value, RunStatus) else RunStatus(value).value
+            for value in expected
+        }
+        with self.db.engine.begin() as conn:
+            result = conn.execute(
+                update(t.runs)
+                .where(t.runs.c.id == run.id, t.runs.c.status.in_(expected_values))
+                .values(**self._values(run))
+            )
+        return result.rowcount == 1
 
     def get(self, run_id: str) -> Run | None:
         with self.db.engine.connect() as conn:

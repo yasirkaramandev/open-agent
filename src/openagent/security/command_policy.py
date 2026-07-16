@@ -483,3 +483,43 @@ def evaluate(
         f"{exe!r} is not a read-only inspection command; running it requires approval",
         argv=argv,
     )
+
+
+def evaluate_test_argv(
+    argv: tuple[str, ...], *, workspace_root: Path, profile: PermissionProfile
+) -> PolicyResult:
+    """Grant unattended test authority only to exact structured runner shapes."""
+
+    if not argv or any(not isinstance(token, str) or not token or "\0" in token for token in argv):
+        return PolicyResult(Decision.DENY, "test argv contains an invalid token")
+    if any(_SHELL_META.search(token) for token in argv):
+        return PolicyResult(
+            Decision.APPROVAL,
+            "shell operators or chaining are not part of structured test authority",
+            argv=argv,
+        )
+    for token in argv[1:]:
+        if profile.restrict_to_workspace and escapes_workspace(token, workspace_root):
+            return PolicyResult(
+                Decision.DENY, f"{token!r} resolves outside the workspace", argv=argv
+            )
+
+    executable = _basename(argv[0])
+    allowed = False
+    if executable == "pytest":
+        allowed = True
+    elif executable in {"python", "python3", "py"}:
+        allowed = len(argv) >= 3 and argv[1:3] == ("-m", "pytest")
+    elif executable in {"npm", "pnpm", "yarn"}:
+        allowed = len(argv) >= 2 and (
+            argv[1] == "test" or (len(argv) >= 3 and argv[1:3] == ("run", "test"))
+        )
+    elif executable in {"cargo", "go", "dotnet"}:
+        allowed = len(argv) >= 2 and argv[1] == "test"
+    if allowed:
+        return PolicyResult(Decision.ALLOW, argv=argv)
+    return PolicyResult(
+        Decision.APPROVAL,
+        "argv is not an approved structured test runner shape",
+        argv=argv,
+    )
