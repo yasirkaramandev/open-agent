@@ -56,6 +56,35 @@ EventHook = Callable[[NormalizedEvent], None]
 _ACTIVE = {RunStatus.QUEUED, RunStatus.STARTING, RunStatus.RUNNING, RunStatus.WAITING_APPROVAL}
 _TERMINAL = {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED, RunStatus.ORPHANED}
 
+#: Statuses a follow-up turn may continue from (§5). Deliberately NOT "everything terminal":
+#: ``orphaned`` and ``cancelled`` are terminal but must never be resumed — see ``_validate_resume``.
+_RESUMABLE_STATUSES = {RunStatus.COMPLETED.value, RunStatus.FAILED.value}
+
+#: Why each orphan reason refuses a resume. Every one of them refuses; only the wording differs, so
+#: the user is told what is actually true about their run rather than a generic "no".
+_ORPHAN_RESUME_REFUSAL = {
+    "orphaned_unattached_process": (
+        "this run is orphaned and its backend process may still be RUNNING but unowned; resuming "
+        "would start a second process against the same session. Stop it first with "
+        "`openagent cancel --id <run-id>`, then start a new run"
+    ),
+    "orphaned_pid_reused": (
+        "this run is orphaned and its recorded PID now belongs to an unrelated process, so its "
+        "session cannot be reasoned about — start a new run"
+    ),
+    "orphaned_pid_unknown": (
+        "this run is orphaned and its process identity cannot be verified — start a new run"
+    ),
+    "orphaned_pid_gone": (
+        "this run is orphaned and its process is gone; OpenAgent cannot safely re-attach to that "
+        "session — start a new run"
+    ),
+}
+_ORPHAN_RESUME_DEFAULT = (
+    "this run is orphaned; OpenAgent lost ownership of it and cannot safely resume it — "
+    "start a new run"
+)
+
 
 class CancelOutcome(str, Enum):
     """The concrete result of a cancel request, so a caller never reports a false success (§3.3).
@@ -700,17 +729,28 @@ class RunService:
         if not run:
             raise RunError(f"run {run_id!r} not found")
         agent = self.repos.agents.get(run.agent)
+
+        # §4.1 Per-run lock, checked first because it is the most specific diagnosis of "a turn is in
+        # flight *right now*" — and because it closes the window between this call and
+        # _resume_locked() flipping the status to running, which the status check below cannot see.
+        # asyncio is single threaded and there is no await between the check and acquire, so this
+        # cannot race.
+        lock = self._resume_locks.setdefault(run.id, asyncio.Lock())
+        if lock.locked():
+            raise RunError("a turn is already running for this run")
+
+        # The service enforces the resume policy itself (§5, §22). This used to live only in
+        # resume_support(), which just the TUI called — so any direct call (CLI, tests, another
+        # screen) walked past every guard, including the one that stops a second process being
+        # attached to a live orphan's session.
+        ok, why = self._validate_resume(run)
+        if not ok:
+            raise RunError(why)
         if not agent or agent.runtime.type not in (RuntimeType.CLI, RuntimeType.CLI.value):
             raise RunError("resume is currently supported for CLI agents only")
         if not run.provider_session_id:
             raise RunError("no session id recorded for this run")
 
-        # §4.1 Per-run lock. A second follow-up while one is running is rejected outright — never a
-        # silent overwrite of the first turn's adapter/cancellation registry. asyncio is single
-        # threaded and there is no await between the check and acquire, so this cannot race.
-        lock = self._resume_locks.setdefault(run.id, asyncio.Lock())
-        if lock.locked():
-            raise RunError("a turn is already running for this run")
         async with lock:
             return await self._resume_locked(run, agent, prompt, on_event)
 
@@ -943,11 +983,35 @@ class RunService:
         return run_id in self._cli_adapters or self.cancellations.get(run_id) is not None
 
     def resume_support(self, run: Run) -> tuple[bool, str]:
-        """Can this run take a follow-up turn right now? If not, why not (item 20)?
+        """Can this run take a follow-up turn right now? If not, why not (item 20, §5)?
 
-        Deliberately honest about mid-turn: a non-interactive CLI process cannot be handed new input
-        while it is working, so OpenAgent says "after the current turn completes" instead of
-        pretending a message can be injected.
+        A thin wrapper over :meth:`_validate_resume` so the button and the service can never drift
+        apart — the UI asks the same function that enforces the rule.
+        """
+
+        return self._validate_resume(run)
+
+    def _validate_resume(self, run: Run) -> tuple[bool, str]:
+        """The single source of truth for "may this run be resumed?" (§5, §22).
+
+        Called by :meth:`resume_support` (which the TUI renders) **and** by :meth:`resume` itself, so
+        reaching the service directly — from the CLI, a test, or any other screen — cannot bypass it.
+        A UI check is not a security boundary.
+
+        The status rules (§5):
+
+        * ``completed`` / ``failed`` — resumable when the backend reported a session id.
+        * ``cancelled`` — refused by default. The user deliberately stopped it; silently continuing
+          the same session is not what "cancel" means. Start a new run.
+        * ``orphaned`` — refused for **every** reason. This is the important one: ``orphaned`` is a
+          terminal status, so the old "is it terminal?" check waved orphans straight through. With
+          ``orphaned_unattached_process`` the backend process may still be *alive*, and resuming
+          would attach a second adapter and a second process to the same session while the first is
+          still running. ``pid_reused``/``pid_unknown`` cannot be reasoned about at all, and
+          ``pid_gone`` would need an explicit "new run from a previous session" flow — which v0.1.3
+          does not implement — so a blind resume of the same run is refused too.
+        * anything non-terminal — the turn is still going; a non-interactive CLI cannot be handed
+          new input mid-flight.
         """
 
         agent = self.repos.agents.get(run.agent)
@@ -956,7 +1020,16 @@ class RunService:
         rtype = agent.runtime.type
         if rtype not in (RuntimeType.CLI, RuntimeType.CLI.value):
             return False, "follow-up is supported for CLI backends in v0.1"
-        if _status_value(run) not in {s.value for s in _TERMINAL}:
+
+        status = _status_value(run)
+        if status == RunStatus.ORPHANED.value:
+            return False, _ORPHAN_RESUME_REFUSAL.get(run.failure_type or "", _ORPHAN_RESUME_DEFAULT)
+        if status == RunStatus.CANCELLED.value:
+            return False, (
+                "this run was cancelled; OpenAgent does not silently continue a session you stopped "
+                "— start a new run instead"
+            )
+        if status not in _RESUMABLE_STATUSES:
             return False, "Follow-up becomes available after the current turn completes."
         if not run.provider_session_id:
             return False, "this backend did not report a session id, so it cannot be resumed"
