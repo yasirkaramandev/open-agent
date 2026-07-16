@@ -83,7 +83,11 @@ class ModelCapabilities(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    text: bool = True
+    # `None` (not tested) rather than `True`. This defaulted to True while every other field
+    # defaulted to None, so a bare ModelCapabilities() — what ModelService.add() stores for a model
+    # registered without a probe — asserted "this model does text" on the basis of nothing at all.
+    # A model's presence in a provider's catalog is not a capability proof (spec §20).
+    text: bool | None = None
     streaming: bool | None = None
     tool_calling: bool | None = None
     parallel_tool_calling: bool | None = None

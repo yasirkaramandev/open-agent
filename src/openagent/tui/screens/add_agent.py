@@ -1401,7 +1401,7 @@ def _probe_line(probe: AgentModelProbe) -> str:
     caps = probe.capabilities
     colour = "green" if probe.agent_compatible else "yellow"
     return (
-        f"text {mark[bool(caps.text)]} · streaming {mark[caps.streaming]} · "
+        f"text {mark[caps.text]} · streaming {mark[caps.streaming]} · "
         f"tool calling {mark[caps.tool_calling]}\n"
         f"[{colour}]{safe_markup(probe.message())}[/{colour}]"
     )

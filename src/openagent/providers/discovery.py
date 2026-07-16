@@ -67,7 +67,9 @@ class AgentModelProbe:
         caps = self.capabilities
         return {
             "model": self.model,
-            "text": bool(caps.text),
+            # null, not false, when untested — the JSON consumer must be able to tell "we did not
+            # test this" from "we tested it and it does not work" (spec §20).
+            "text": caps.text,
             "streaming": caps.streaming,
             "tool_calling": caps.tool_calling,
             "agent_compatible": self.agent_compatible,

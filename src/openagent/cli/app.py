@@ -555,7 +555,9 @@ def _print_probe(name: str, model: str, *, json_out: bool, refresh: bool) -> Non
             None: "[yellow]unverified[/yellow]",
         }
         console.print(f"[bold]{safe_markup(name)}[/bold] · {safe_markup(model)}")
-        console.print(f"  text:         {mark[bool(caps.text)]}")
+        # `mark` already distinguishes unverified; bool() collapsed None into "no", making that
+        # branch unreachable and reporting an untested model as known-unsupported (spec §20).
+        console.print(f"  text:         {mark[caps.text]}")
         console.print(f"  streaming:    {mark[caps.streaming]}")
         console.print(f"  tool calling: {mark[caps.tool_calling]}")
         colour = "green" if probe.agent_compatible else "yellow"

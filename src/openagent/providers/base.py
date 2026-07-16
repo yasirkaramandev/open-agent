@@ -144,7 +144,9 @@ async def default_probe(
     flips an unverified capability to ``True``.
     """
 
-    caps = ModelCapabilities(text=True, streaming=None, tool_calling=None, system_prompt=None)
+    # Starts wholly unknown: every field below is set only from something the probe actually
+    # observed, so an early return cannot leave an optimistic default behind (spec §20).
+    caps = ModelCapabilities(text=None, streaming=None, tool_calling=None, system_prompt=None)
 
     text_req = NormalizedModelRequest(
         model=model_id,
