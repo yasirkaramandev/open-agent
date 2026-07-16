@@ -44,17 +44,22 @@ def app(tmp_path: Path) -> OpenAgentApp:
     (project / "seed.txt").write_text("seed\n")
     _git(["add", "-A"], project)
     _git(["commit", "-q", "-m", "init"], project)
-    oa = OpenAgentApp(Paths(
-        data_dir=tmp_path / "data", config_dir=tmp_path / "config",
-        db_path=tmp_path / "data" / "openagent.db", project_root=project,
-    ))
+    oa = OpenAgentApp(
+        Paths(
+            data_dir=tmp_path / "data",
+            config_dir=tmp_path / "config",
+            db_path=tmp_path / "data" / "openagent.db",
+            project_root=project,
+        )
+    )
     oa.agents.create(name="fake-coder", runtime_type=RuntimeType.CLI, cli="fake")
     return oa
 
 
 def _events(app: OpenAgentApp, run_id: str) -> list[dict]:
-    return [json.loads(line) for line in
-            app.runs.output(run_id, "events").splitlines() if line.strip()]
+    return [
+        json.loads(line) for line in app.runs.output(run_id, "events").splitlines() if line.strip()
+    ]
 
 
 def _terminals(app: OpenAgentApp, run_id: str) -> list[str]:
@@ -178,7 +183,9 @@ async def _resume_with_failure(app, tmp_path, monkeypatch, *, patch) -> str:
 
 async def test_resume_write_turn_failure_recovers(app, tmp_path, monkeypatch):
     run_id = await _resume_with_failure(
-        app, tmp_path, monkeypatch,
+        app,
+        tmp_path,
+        monkeypatch,
         patch=lambda: monkeypatch.setattr(ArtifactWriter, "write_turn", _boom),
     )
     assert json.loads(app.runs.output(run_id, "status"))["status"] == "failed"
@@ -186,7 +193,9 @@ async def test_resume_write_turn_failure_recovers(app, tmp_path, monkeypatch):
 
 async def test_resume_write_status_failure_recovers(app, tmp_path, monkeypatch):
     run_id = await _resume_with_failure(
-        app, tmp_path, monkeypatch,
+        app,
+        tmp_path,
+        monkeypatch,
         patch=lambda: monkeypatch.setattr(ArtifactWriter, "write_status", _boom),
     )
     assert enum_value(app.runs.get(run_id).status) == "failed"
@@ -194,7 +203,9 @@ async def test_resume_write_status_failure_recovers(app, tmp_path, monkeypatch):
 
 async def test_resume_write_results_failure_recovers(app, tmp_path, monkeypatch):
     run_id = await _resume_with_failure(
-        app, tmp_path, monkeypatch,
+        app,
+        tmp_path,
+        monkeypatch,
         patch=lambda: monkeypatch.setattr(ArtifactWriter, "write_results", _boom),
     )
     status = json.loads(app.runs.output(run_id, "status"))
@@ -203,7 +214,9 @@ async def test_resume_write_results_failure_recovers(app, tmp_path, monkeypatch)
 
 async def test_resume_write_timeline_failure_recovers(app, tmp_path, monkeypatch):
     run_id = await _resume_with_failure(
-        app, tmp_path, monkeypatch,
+        app,
+        tmp_path,
+        monkeypatch,
         patch=lambda: monkeypatch.setattr(ArtifactWriter, "write_timeline", _boom),
     )
     assert enum_value(app.runs.get(run_id).status) == "failed"
@@ -211,7 +224,9 @@ async def test_resume_write_timeline_failure_recovers(app, tmp_path, monkeypatch
 
 async def test_resume_diff_failure_recovers(app, tmp_path, monkeypatch):
     run_id = await _resume_with_failure(
-        app, tmp_path, monkeypatch,
+        app,
+        tmp_path,
+        monkeypatch,
         patch=lambda: monkeypatch.setattr(WorktreeManager, "diff", _boom),
     )
     # A diff failure during finalization is its own terminal failure type.

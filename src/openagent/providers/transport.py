@@ -110,25 +110,35 @@ class Transport:
                 async with self.client().stream("POST", path, json=payload) as response:
                     if response.status_code == 202:
                         await response.aread()
-                        raise TransportError(ErrorType.ASYNC_UNSUPPORTED, _ASYNC_MESSAGE, status=202)
+                        raise TransportError(
+                            ErrorType.ASYNC_UNSUPPORTED, _ASYNC_MESSAGE, status=202
+                        )
                     if response.status_code >= 400:
                         body = (await response.aread()).decode("utf-8", errors="replace")
                         retry_after = _retry_after(response)
                         # Header errors arrive before any event, so retrying is still safe.
-                        if (response.status_code in _RETRY_STATUSES and attempt < self.max_retries
-                                and not received_event):
+                        if (
+                            response.status_code in _RETRY_STATUSES
+                            and attempt < self.max_retries
+                            and not received_event
+                        ):
                             await self._sleep(attempt, retry_after)
                             attempt += 1
                             continue  # retry outer loop
                         raise TransportError(
-                            classify_http_status(response.status_code), body,
+                            classify_http_status(response.status_code),
+                            body,
                             status=response.status_code,
                         )
                     async for line in response.aiter_lines():
                         stripped = line.strip()
-                        if not stripped or stripped.startswith(":") or not stripped.startswith("data:"):
+                        if (
+                            not stripped
+                            or stripped.startswith(":")
+                            or not stripped.startswith("data:")
+                        ):
                             continue
-                        payload_str = stripped[len("data:"):].strip()
+                        payload_str = stripped[len("data:") :].strip()
                         if payload_str == "[DONE]":
                             return
                         try:
@@ -155,7 +165,8 @@ class Transport:
         response = await self.client().get(path)
         if response.status_code >= 400:
             raise TransportError(
-                classify_http_status(response.status_code), _error_text(response),
+                classify_http_status(response.status_code),
+                _error_text(response),
                 status=response.status_code,
             )
         return response.json()

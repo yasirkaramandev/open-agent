@@ -37,14 +37,14 @@ PROBE_MAX_TOKENS = 64
 PROBE_TIMEOUT = 30.0
 
 #: Probe outcome categories — each maps to an honest, actionable user-facing message.
-PROBE_VERIFIED = "verified"                  # text + streaming + tool calling all observed
-PROBE_PARTIAL = "partial"                    # text works; tool calling not verified
-PROBE_INCOMPATIBLE = "incompatible"          # 4xx/422 — wrong request shape for this model
-PROBE_NOT_FOUND = "not_found"                # 404 — model gone from the catalog
-PROBE_UNAUTHORIZED = "unauthorized"          # 401/403 — the key was rejected
-PROBE_RATE_LIMITED = "rate_limited"          # 429
+PROBE_VERIFIED = "verified"  # text + streaming + tool calling all observed
+PROBE_PARTIAL = "partial"  # text works; tool calling not verified
+PROBE_INCOMPATIBLE = "incompatible"  # 4xx/422 — wrong request shape for this model
+PROBE_NOT_FOUND = "not_found"  # 404 — model gone from the catalog
+PROBE_UNAUTHORIZED = "unauthorized"  # 401/403 — the key was rejected
+PROBE_RATE_LIMITED = "rate_limited"  # 429
 PROBE_ASYNC_UNSUPPORTED = "async_unsupported"  # 202 + request id (spec §15.5)
-PROBE_UNREACHABLE = "unreachable"            # transport/timeout
+PROBE_UNREACHABLE = "unreachable"  # transport/timeout
 
 
 @dataclass
@@ -130,20 +130,34 @@ async def probe_agent_model(
         model=model_id,
         system="You are a probe. Reply with a single short word.",
         messages=[Message(role=Role.USER, content="Say ok.")],
-        max_tokens=16, stream=False,
+        max_tokens=16,
+        stream=False,
     )
     try:
         result = await asyncio.wait_for(collect(adapter.stream_response(text_req)), timeout)
     except asyncio.TimeoutError:
-        return AgentModelProbe(model_id, ModelCapabilities(text=False), False, PROBE_UNREACHABLE,
-                               "the model did not respond within the probe timeout", _now())
+        return AgentModelProbe(
+            model_id,
+            ModelCapabilities(text=False),
+            False,
+            PROBE_UNREACHABLE,
+            "the model did not respond within the probe timeout",
+            _now(),
+        )
     except Exception as exc:  # noqa: BLE001 - any failure -> capabilities unknown, assert nothing
-        return AgentModelProbe(model_id, ModelCapabilities(text=False), False, PROBE_UNREACHABLE,
-                               str(exc), _now())
+        return AgentModelProbe(
+            model_id, ModelCapabilities(text=False), False, PROBE_UNREACHABLE, str(exc), _now()
+        )
     if result.is_error:
         category = _ERROR_CATEGORIES.get(result.error_type or "", PROBE_UNREACHABLE)
-        return AgentModelProbe(model_id, ModelCapabilities(text=False), False, category,
-                               result.error_message or "", _now())
+        return AgentModelProbe(
+            model_id,
+            ModelCapabilities(text=False),
+            False,
+            category,
+            result.error_message or "",
+            _now(),
+        )
 
     caps = ModelCapabilities(text=bool(result.text), streaming=None, tool_calling=None)
 
@@ -158,11 +172,15 @@ async def probe_agent_model(
     tool_req = NormalizedModelRequest(
         model=model_id,
         messages=[Message(role=Role.USER, content="Call the ping tool with value 1.")],
-        tools=[{
-            "name": "ping", "description": "health probe",
-            "parameters": {"type": "object", "properties": {"value": {"type": "integer"}}},
-        }],
-        max_tokens=PROBE_MAX_TOKENS, stream=False,
+        tools=[
+            {
+                "name": "ping",
+                "description": "health probe",
+                "parameters": {"type": "object", "properties": {"value": {"type": "integer"}}},
+            }
+        ],
+        max_tokens=PROBE_MAX_TOKENS,
+        stream=False,
     )
     try:
         tres = await asyncio.wait_for(collect(adapter.stream_response(tool_req)), timeout)
@@ -173,8 +191,8 @@ async def probe_agent_model(
 
     # An OpenAgent API agent needs all three; anything less is honestly reported as partial (§15.2).
     agent_compatible = bool(caps.text and caps.streaming and caps.tool_calling)
-    category = PROBE_VERIFIED if agent_compatible else (
-        PROBE_PARTIAL if caps.text else PROBE_INCOMPATIBLE
+    category = (
+        PROBE_VERIFIED if agent_compatible else (PROBE_PARTIAL if caps.text else PROBE_INCOMPATIBLE)
     )
     return AgentModelProbe(model_id, caps, agent_compatible, category, "", _now())
 
@@ -192,7 +210,15 @@ async def discover_models(adapter: ProviderAdapter) -> list[RemoteModel]:
 #: (spec §14.3) — never a capability decision. A real probe is the only authority; guessing from a
 #: name would either block a working model or bless a broken one.
 NON_CHAT_HINTS = (
-    "embed", "embedding", "rerank", "clip", "detector", "parse", "vision", "image", "video",
+    "embed",
+    "embedding",
+    "rerank",
+    "clip",
+    "detector",
+    "parse",
+    "vision",
+    "image",
+    "video",
 )
 
 
@@ -204,7 +230,10 @@ def looks_non_chat(model_id: str) -> bool:
 
 
 def filter_models(
-    models: Sequence[RemoteModel], *, search: str | None = None, owner: str | None = None,
+    models: Sequence[RemoteModel],
+    *,
+    search: str | None = None,
+    owner: str | None = None,
 ) -> list[RemoteModel]:
     """Local, case-insensitive catalog filtering (spec §14.2, §17.3).
 
@@ -219,8 +248,7 @@ def filter_models(
     if search:
         needle = search.strip().lower()
         result = [
-            m for m in result
-            if needle in m.id.lower() or needle in (m.display_name or "").lower()
+            m for m in result if needle in m.id.lower() or needle in (m.display_name or "").lower()
         ]
     return result
 

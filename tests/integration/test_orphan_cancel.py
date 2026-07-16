@@ -77,16 +77,30 @@ def _spawn_tree(tmp_path: Path) -> tuple[subprocess.Popen, int, int]:
 def _seed_orphan_run(app: OpenAgentApp, pid: int, create_time: float | None) -> Run:
     """Persist a RUNNING run + a realistic run_dir/events.jsonl, as a real run would have left it."""
 
-    run = Run(id="run_orphan01", agent="ghost", status=RunStatus.RUNNING, pid=pid,
-              pid_started_at=create_time)
+    run = Run(
+        id="run_orphan01",
+        agent="ghost",
+        status=RunStatus.RUNNING,
+        pid=pid,
+        pid_started_at=create_time,
+    )
     app.repos.runs.upsert(run)
     run_dir = app.paths.run_dir(run.id)
     run_dir.mkdir(parents=True, exist_ok=True)
     log = EventLog(run_dir, index=app.repos.event_index)
-    log.append(NormalizedEvent(run_id=run.id, type=EventType.RUN_STARTED, source="openagent",
-                               data={"agent": "ghost"}))
-    log.append(NormalizedEvent(run_id=run.id, type=EventType.PROCESS_STARTED, source="fake-cli",
-                               data={"pid": pid, "create_time": create_time}))
+    log.append(
+        NormalizedEvent(
+            run_id=run.id, type=EventType.RUN_STARTED, source="openagent", data={"agent": "ghost"}
+        )
+    )
+    log.append(
+        NormalizedEvent(
+            run_id=run.id,
+            type=EventType.PROCESS_STARTED,
+            source="fake-cli",
+            data={"pid": pid, "create_time": create_time},
+        )
+    )
     return run
 
 
@@ -111,7 +125,9 @@ async def test_orphaned_live_process_is_cancelled(app: OpenAgentApp, tmp_path: P
 
         # The whole tree is gone — parent and grandchild.
         deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and (is_pid_alive(parent_pid) or is_pid_alive(grandchild_pid)):
+        while time.monotonic() < deadline and (
+            is_pid_alive(parent_pid) or is_pid_alive(grandchild_pid)
+        ):
             time.sleep(0.05)
         assert not is_pid_alive(parent_pid), "orphaned parent still alive after cancel"
         assert not is_pid_alive(grandchild_pid), "orphaned grandchild still alive after cancel"
@@ -123,8 +139,11 @@ async def test_orphaned_live_process_is_cancelled(app: OpenAgentApp, tmp_path: P
         assert json.loads(restarted.runs.output("run_orphan01", "status"))["status"] == "cancelled"
 
         # run.cancelled is the LAST log entry; the audit note recording the kill precedes it.
-        events = [json.loads(line) for line in
-                  restarted.runs.output("run_orphan01", "events").splitlines() if line.strip()]
+        events = [
+            json.loads(line)
+            for line in restarted.runs.output("run_orphan01", "events").splitlines()
+            if line.strip()
+        ]
         assert events[-1]["type"] == "run.cancelled"
         assert any(e["type"] == "log" and e["data"].get("killed") is True for e in events)
     finally:

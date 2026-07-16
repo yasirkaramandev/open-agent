@@ -32,8 +32,9 @@ _CATALOG = [
     RemoteModel(id="nvidia/nemotron-test", display_name="nvidia/nemotron-test", owned_by="nvidia"),
     RemoteModel(id="nvidia/embed-test", display_name="nvidia/embed-test", owned_by="nvidia"),
     RemoteModel(id="meta/vision-test", display_name="meta/vision-test", owned_by="meta"),
-    RemoteModel(id="deepseek-ai/chat-test", display_name="deepseek-ai/chat-test",
-                owned_by="deepseek-ai"),
+    RemoteModel(
+        id="deepseek-ai/chat-test", display_name="deepseek-ai/chat-test", owned_by="deepseek-ai"
+    ),
 ]
 
 
@@ -54,23 +55,39 @@ def catalog(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _verified(model: str) -> AgentModelProbe:
     return AgentModelProbe(
-        model, ModelCapabilities(text=True, streaming=True, tool_calling=True),
-        True, PROBE_VERIFIED, "", datetime.now(timezone.utc),
+        model,
+        ModelCapabilities(text=True, streaming=True, tool_calling=True),
+        True,
+        PROBE_VERIFIED,
+        "",
+        datetime.now(timezone.utc),
     )
 
 
 def _partial(model: str) -> AgentModelProbe:
     return AgentModelProbe(
-        model, ModelCapabilities(text=True, streaming=True, tool_calling=None),
-        False, PROBE_PARTIAL, "", datetime.now(timezone.utc),
+        model,
+        ModelCapabilities(text=True, streaming=True, tool_calling=None),
+        False,
+        PROBE_PARTIAL,
+        "",
+        datetime.now(timezone.utc),
     )
 
 
 def _add_nvidia_via_env() -> object:
-    return runner.invoke(app, [
-        "provider", "add", "nvidia-build", "--type", "nvidia-build",
-        "--key-env", "NVIDIA_API_KEY",
-    ])
+    return runner.invoke(
+        app,
+        [
+            "provider",
+            "add",
+            "nvidia-build",
+            "--type",
+            "nvidia-build",
+            "--key-env",
+            "NVIDIA_API_KEY",
+        ],
+    )
 
 
 # --------------------------------------------------------------------------- §17.1/§17.2 provider add
@@ -78,7 +95,9 @@ def _add_nvidia_via_env() -> object:
 
 def test_provider_add_prompts_for_the_key_and_never_takes_it_as_an_argument():
     result = runner.invoke(
-        app, ["provider", "add", "nvidia-build", "--type", "nvidia-build"], input=f"{FAKE_KEY}\n",
+        app,
+        ["provider", "add", "nvidia-build", "--type", "nvidia-build"],
+        input=f"{FAKE_KEY}\n",
     )
     assert result.exit_code == 0, result.stdout
     # The prompt is labelled with the provider's own credential label (§17.1)…
@@ -126,8 +145,9 @@ def test_provider_models_json_is_machine_readable_and_claims_no_capabilities(cat
 
 def test_provider_models_search_and_owner_filters(catalog):
     _add_nvidia_via_env()
-    searched = runner.invoke(app, ["provider", "models", "nvidia-build", "--search", "nemotron",
-                                   "--json"])
+    searched = runner.invoke(
+        app, ["provider", "models", "nvidia-build", "--search", "nemotron", "--json"]
+    )
     assert [m["id"] for m in json.loads(searched.stdout)["models"]] == ["nvidia/nemotron-test"]
 
     owned = runner.invoke(app, ["provider", "models", "nvidia-build", "--owner", "meta", "--json"])
@@ -152,8 +172,9 @@ def test_provider_probe_json_output(monkeypatch, catalog):
         return _verified(model_id)
 
     monkeypatch.setattr(ProviderService, "probe_model", _probe)
-    result = runner.invoke(app, ["provider", "probe", "nvidia-build",
-                                 "--model", "nvidia/nemotron-test", "--json"])
+    result = runner.invoke(
+        app, ["provider", "probe", "nvidia-build", "--model", "nvidia/nemotron-test", "--json"]
+    )
     assert result.exit_code == 0, result.stdout
     payload = json.loads(result.stdout)
     assert payload["provider"] == "nvidia-build"
@@ -207,8 +228,9 @@ def test_provider_test_with_model_runs_a_real_probe(monkeypatch):
         return _verified(model_id)
 
     monkeypatch.setattr(ProviderService, "probe_model", _probe)
-    result = runner.invoke(app, ["provider", "test", "nvidia-build",
-                                 "--model", "nvidia/nemotron-test"])
+    result = runner.invoke(
+        app, ["provider", "test", "nvidia-build", "--model", "nvidia/nemotron-test"]
+    )
     assert result.exit_code == 0, result.stdout
     assert "Verified Agent Compatible" in result.stdout
 
@@ -218,10 +240,18 @@ def test_provider_test_with_model_runs_a_real_probe(monkeypatch):
 
 def test_agent_add_refuses_an_unprobed_mixed_catalog_model(catalog):
     _add_nvidia_via_env()
-    result = runner.invoke(app, [
-        "add", "--name", "nvidia-coder", "--provider", "nvidia-build",
-        "--model", "nvidia/nemotron-test",
-    ])
+    result = runner.invoke(
+        app,
+        [
+            "add",
+            "--name",
+            "nvidia-coder",
+            "--provider",
+            "nvidia-build",
+            "--model",
+            "nvidia/nemotron-test",
+        ],
+    )
     assert result.exit_code == 1
     combined = result.stdout + str(result.stderr or "")
     assert "has not been validated" in combined
@@ -231,10 +261,19 @@ def test_agent_add_refuses_an_unprobed_mixed_catalog_model(catalog):
 
 def test_agent_add_allows_explicit_unverified_override(catalog):
     _add_nvidia_via_env()
-    result = runner.invoke(app, [
-        "add", "--name", "nvidia-coder", "--provider", "nvidia-build",
-        "--model", "nvidia/nemotron-test", "--allow-unverified-model",
-    ])
+    result = runner.invoke(
+        app,
+        [
+            "add",
+            "--name",
+            "nvidia-coder",
+            "--provider",
+            "nvidia-build",
+            "--model",
+            "nvidia/nemotron-test",
+            "--allow-unverified-model",
+        ],
+    )
     assert result.exit_code == 0, result.stdout
     assert "NOT verified agent-compatible" in result.stdout  # the override is loudly reported
     agents = json.loads(runner.invoke(app, ["agent", "list", "--json"]).stdout)
@@ -252,25 +291,45 @@ def test_agent_add_succeeds_after_a_verified_probe(monkeypatch, catalog):
         return result
 
     monkeypatch.setattr(ProviderService, "probe_model", _probe)
-    probed = runner.invoke(app, ["provider", "probe", "nvidia-build",
-                                 "--model", "nvidia/nemotron-test"])
+    probed = runner.invoke(
+        app, ["provider", "probe", "nvidia-build", "--model", "nvidia/nemotron-test"]
+    )
     assert probed.exit_code == 0, probed.stdout
     # NB: a fresh CLI invocation builds a new app, so the in-memory cache does not carry over —
     # the documented non-interactive flow is the explicit override. This asserts the gate itself.
-    result = runner.invoke(app, [
-        "add", "--name", "nvidia-coder", "--provider", "nvidia-build",
-        "--model", "nvidia/nemotron-test", "--allow-unverified-model",
-    ])
+    result = runner.invoke(
+        app,
+        [
+            "add",
+            "--name",
+            "nvidia-coder",
+            "--provider",
+            "nvidia-build",
+            "--model",
+            "nvidia/nemotron-test",
+            "--allow-unverified-model",
+        ],
+    )
     assert result.exit_code == 0, result.stdout
 
 
 def test_non_mixed_catalog_providers_are_not_gated():
     """The probe gate is scoped to mixed catalogs — a normal provider still creates freely."""
 
-    add = runner.invoke(app, [
-        "provider", "add", "ds", "--type", "custom",
-        "--base-url", "https://api.test/v1", "--key-env", "DS_KEY",
-    ])
+    add = runner.invoke(
+        app,
+        [
+            "provider",
+            "add",
+            "ds",
+            "--type",
+            "custom",
+            "--base-url",
+            "https://api.test/v1",
+            "--key-env",
+            "DS_KEY",
+        ],
+    )
     assert add.exit_code == 0, add.stdout
     result = runner.invoke(app, ["add", "--name", "ds-coder", "--provider", "ds", "--model", "m"])
     assert result.exit_code == 0, result.stdout

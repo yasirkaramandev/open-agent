@@ -31,18 +31,23 @@ _CATALOG = [
     RemoteModel(id="nvidia/nemotron-test", display_name="nvidia/nemotron-test", owned_by="nvidia"),
     RemoteModel(id="nvidia/embed-test", display_name="nvidia/embed-test", owned_by="nvidia"),
     RemoteModel(id="meta/vision-test", display_name="meta/vision-test", owned_by="meta"),
-    RemoteModel(id="deepseek-ai/chat-test", display_name="deepseek-ai/chat-test",
-                owned_by="deepseek-ai"),
+    RemoteModel(
+        id="deepseek-ai/chat-test", display_name="deepseek-ai/chat-test", owned_by="deepseek-ai"
+    ),
 ]
 
 
 def _app(tmp_path: Path) -> OpenAgentApp:
     project = tmp_path / "proj"
     project.mkdir()
-    return OpenAgentApp(Paths(
-        data_dir=tmp_path / "data", config_dir=tmp_path / "config",
-        db_path=tmp_path / "data" / "openagent.db", project_root=project,
-    ))
+    return OpenAgentApp(
+        Paths(
+            data_dir=tmp_path / "data",
+            config_dir=tmp_path / "config",
+            db_path=tmp_path / "data" / "openagent.db",
+            project_root=project,
+        )
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -110,9 +115,14 @@ async def _to_connection(pilot) -> AddAgentScreen:
 
 def _probe(model: str, *, verified: bool) -> AgentModelProbe:
     caps = ModelCapabilities(text=True, streaming=True, tool_calling=True if verified else None)
-    return AgentModelProbe(model, caps, verified,
-                           PROBE_VERIFIED if verified else PROBE_PARTIAL, "",
-                           datetime.now(timezone.utc))
+    return AgentModelProbe(
+        model,
+        caps,
+        verified,
+        PROBE_VERIFIED if verified else PROBE_PARTIAL,
+        "",
+        datetime.now(timezone.utc),
+    )
 
 
 # --------------------------------------------------------------------------- §13 provider card
@@ -166,8 +176,9 @@ async def test_keychain_input_is_masked_and_cleared_on_unmount(tmp_path: Path):
 
 async def test_open_nvidia_build_uses_webbrowser_not_a_shell(tmp_path: Path, monkeypatch):
     opened: list[str] = []
-    monkeypatch.setattr("openagent.tui.screens.add_agent.webbrowser.open",
-                        lambda url: opened.append(url) or True)
+    monkeypatch.setattr(
+        "openagent.tui.screens.add_agent.webbrowser.open", lambda url: opened.append(url) or True
+    )
     async with OpenAgentTUI(_app(tmp_path)).run_test(size=(120, 60)) as pilot:
         await _to_connection(pilot)
         await pilot.click("#open-catalog")
@@ -205,12 +216,18 @@ async def _to_model_step(pilot, monkeypatch) -> AddAgentScreen:
 async def test_catalog_loads_with_publisher_filter_and_mixed_warning(tmp_path: Path, monkeypatch):
     async with OpenAgentTUI(_app(tmp_path)).run_test(size=(120, 60)) as pilot:
         screen = await _to_model_step(pilot, monkeypatch)
-        values = [v for v in select_all_option_values(screen.query_one("#model_select", Select))
-                  if isinstance(v, str)]
+        values = [
+            v
+            for v in select_all_option_values(screen.query_one("#model_select", Select))
+            if isinstance(v, str)
+        ]
         assert values == [m.id for m in _CATALOG]
         # The publisher filter is populated from what the catalog reported (§14.2).
-        owners = [v for v in select_all_option_values(screen.query_one("#model-owner", Select))
-                  if isinstance(v, str)]
+        owners = [
+            v
+            for v in select_all_option_values(screen.query_one("#model-owner", Select))
+            if isinstance(v, str)
+        ]
         assert owners == ["deepseek-ai", "meta", "nvidia"]
         # The mixed-catalog warning is explicit (§14.3).
         warning = str(screen.query_one("#catalog-warning").render())
@@ -223,8 +240,11 @@ async def test_search_filters_locally(tmp_path: Path, monkeypatch):
         screen = await _to_model_step(pilot, monkeypatch)
         screen.query_one("#model-search", Input).value = "nemotron"
         await pilot.pause()
-        values = [v for v in select_all_option_values(screen.query_one("#model_select", Select))
-                  if isinstance(v, str)]
+        values = [
+            v
+            for v in select_all_option_values(screen.query_one("#model_select", Select))
+            if isinstance(v, str)
+        ]
         assert values == ["nvidia/nemotron-test"]
 
 
@@ -235,8 +255,11 @@ async def test_non_chat_entries_are_labelled_as_a_hint_only(tmp_path: Path, monk
         embed = next(x for x in labels if "embed-test" in x)
         assert "may not be a chat model" in embed
         # …but it is still selectable: only a probe may decide (§14.3).
-        values = [v for v in select_all_option_values(screen.query_one("#model_select", Select))
-                  if isinstance(v, str)]
+        values = [
+            v
+            for v in select_all_option_values(screen.query_one("#model_select", Select))
+            if isinstance(v, str)
+        ]
         assert "nvidia/embed-test" in values
 
 
@@ -275,7 +298,9 @@ async def test_validate_marks_a_verified_model_and_allows_advancing(tmp_path: Pa
         assert screen.step == "details"
 
 
-async def test_partial_model_is_blocked_but_can_be_overridden_explicitly(tmp_path: Path, monkeypatch):
+async def test_partial_model_is_blocked_but_can_be_overridden_explicitly(
+    tmp_path: Path, monkeypatch
+):
     async def _probe_config(self, *, model_id, **kwargs):  # noqa: ANN001
         return _probe(model_id, verified=False)
 

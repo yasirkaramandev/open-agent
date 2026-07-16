@@ -55,9 +55,7 @@ class ProviderInUseError(ValueError):
     def __init__(self, provider: str, agents: Sequence[str]) -> None:
         self.provider = provider
         self.agents = list(agents)
-        super().__init__(
-            f"provider {provider!r} is used by agents: {', '.join(self.agents)}"
-        )
+        super().__init__(f"provider {provider!r} is used by agents: {', '.join(self.agents)}")
 
 
 class ProviderTransaction:
@@ -79,8 +77,11 @@ class ProviderTransaction:
     """
 
     def __init__(
-        self, credentials: CredentialStore, repos: Repositories,
-        provider: ProviderConnection, api_key: str | None,
+        self,
+        credentials: CredentialStore,
+        repos: Repositories,
+        provider: ProviderConnection,
+        api_key: str | None,
     ) -> None:
         self._credentials = credentials
         self._repos = repos
@@ -114,7 +115,9 @@ class ProviderTransaction:
         self._forget()
 
     def __exit__(
-        self, exc_type: type[BaseException] | None, exc: BaseException | None,
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
         # Returns None → never suppresses the in-flight exception; an uncommitted transaction is
@@ -190,7 +193,9 @@ def resolve_credential(
             )
         # A no-key provider configured via the keychain source but left blank: store nothing.
         return CredentialRef(type=CredentialType.NONE)
-    return CredentialRef(type=CredentialType.KEYCHAIN, service="openagent", account=f"provider/{name}")
+    return CredentialRef(
+        type=CredentialType.KEYCHAIN, service="openagent", account=f"provider/{name}"
+    )
 
 
 class ProviderService:
@@ -240,10 +245,18 @@ class ProviderService:
         """
 
         with self.create_transaction(
-            name=name, provider_type=provider_type, protocol=protocol, base_url=base_url,
-            anthropic_base_url=anthropic_base_url, api_key=api_key, key_env=key_env,
-            credential_source=credential_source, region=region, workspace_id=workspace_id,
-            extra_headers=extra_headers, store_key=store_key,
+            name=name,
+            provider_type=provider_type,
+            protocol=protocol,
+            base_url=base_url,
+            anthropic_base_url=anthropic_base_url,
+            api_key=api_key,
+            key_env=key_env,
+            credential_source=credential_source,
+            region=region,
+            workspace_id=workspace_id,
+            extra_headers=extra_headers,
+            store_key=store_key,
         ) as tx:
             tx.commit()  # the provider row is durable — forget the previous secret immediately (§6)
             return tx.provider
@@ -274,7 +287,10 @@ class ProviderService:
         preset = get_preset(provider_type)
         resolved_protocol = protocol or (preset.protocol if preset else Protocol.OPENAI_CHAT)
         credential = resolve_credential(
-            name=name, provider_type=provider_type, api_key=api_key, key_env=key_env,
+            name=name,
+            provider_type=provider_type,
+            api_key=api_key,
+            key_env=key_env,
             credential_source=credential_source,
         )
         provider = ProviderConnection(
@@ -350,9 +366,15 @@ class ProviderService:
         preset = get_preset(provider_type)
         resolved_protocol = protocol or (preset.protocol if preset else Protocol.OPENAI_CHAT)
         provider = ProviderConnection(
-            id="provider__transient", name="__transient", provider_type=provider_type,
-            protocol=resolved_protocol, base_url=base_url, anthropic_base_url=anthropic_base_url,
-            region=region, workspace_id=workspace_id, credential=CredentialRef(type=CredentialType.NONE),
+            id="provider__transient",
+            name="__transient",
+            provider_type=provider_type,
+            protocol=resolved_protocol,
+            base_url=base_url,
+            anthropic_base_url=anthropic_base_url,
+            region=region,
+            workspace_id=workspace_id,
+            credential=CredentialRef(type=CredentialType.NONE),
         )
         key = api_key or (os.environ.get(key_env) if key_env else None)
         register_secret(key)
@@ -389,9 +411,15 @@ class ProviderService:
         preset = get_preset(provider_type)
         resolved_protocol = protocol or (preset.protocol if preset else Protocol.OPENAI_CHAT)
         provider = ProviderConnection(
-            id="provider__transient", name="__transient", provider_type=provider_type,
-            protocol=resolved_protocol, base_url=base_url, anthropic_base_url=anthropic_base_url,
-            region=region, workspace_id=workspace_id, credential=CredentialRef(type=CredentialType.NONE),
+            id="provider__transient",
+            name="__transient",
+            provider_type=provider_type,
+            protocol=resolved_protocol,
+            base_url=base_url,
+            anthropic_base_url=anthropic_base_url,
+            region=region,
+            workspace_id=workspace_id,
+            credential=CredentialRef(type=CredentialType.NONE),
         )
         key = api_key or (os.environ.get(key_env) if key_env else None)
         register_secret(key)
@@ -436,7 +464,11 @@ class ProviderService:
     # ------------------------------------------------------------------ capability probe (§15, §16)
 
     async def probe_model(
-        self, provider_name: str, model_id: str, *, refresh: bool = False,
+        self,
+        provider_name: str,
+        model_id: str,
+        *,
+        refresh: bool = False,
     ) -> AgentModelProbe:
         """Really exercise ``model_id`` on a saved provider and report what was observed (§15.1).
 
@@ -484,9 +516,14 @@ class ProviderService:
         preset = get_preset(provider_type)
         resolved_protocol = protocol or (preset.protocol if preset else Protocol.OPENAI_CHAT)
         provider = ProviderConnection(
-            id="provider__transient", name="__transient", provider_type=provider_type,
-            protocol=resolved_protocol, base_url=base_url, anthropic_base_url=anthropic_base_url,
-            region=region, workspace_id=workspace_id,
+            id="provider__transient",
+            name="__transient",
+            provider_type=provider_type,
+            protocol=resolved_protocol,
+            base_url=base_url,
+            anthropic_base_url=anthropic_base_url,
+            region=region,
+            workspace_id=workspace_id,
             credential=CredentialRef(type=CredentialType.NONE),
         )
         key = api_key or (os.environ.get(key_env) if key_env else None)
@@ -494,8 +531,9 @@ class ProviderService:
         try:
             resolve_base_url(provider)
         except ValueError as exc:
-            return AgentModelProbe(model_id, ModelCapabilities(text=False), False,
-                                   PROBE_UNREACHABLE, str(exc))
+            return AgentModelProbe(
+                model_id, ModelCapabilities(text=False), False, PROBE_UNREACHABLE, str(exc)
+            )
         adapter = build_adapter(provider, key)
         try:
             return await probe_agent_model(adapter, model_id)
@@ -532,7 +570,9 @@ class ProviderService:
             base_url = resolve_base_url(provider)
         except ValueError:
             base_url = ""
-        return f"{provider.id}|{model_id}|{base_url}|{self._credential_identity(provider.credential)}"
+        return (
+            f"{provider.id}|{model_id}|{base_url}|{self._credential_identity(provider.credential)}"
+        )
 
     def _credential_identity(self, credential: CredentialRef) -> str:
         """A stable identity for the credential — the *reference*, plus an in-memory-only digest.

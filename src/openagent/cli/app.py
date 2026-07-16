@@ -28,7 +28,8 @@ from ..services.run_service import CancelOutcome, RunError
 from ..tui.markup import safe_line, safe_markup
 
 app = typer.Typer(
-    add_completion=False, no_args_is_help=False,
+    add_completion=False,
+    no_args_is_help=False,
     help="OpenAgent — local-first control plane for AI APIs, coding CLIs, and agents.",
 )
 provider_app = typer.Typer(help="Manage API provider connections.")
@@ -72,8 +73,10 @@ def init() -> None:
     console.print(f"  data:    {oa.paths.data_dir}")
     console.print(f"  db:      {oa.paths.db_path}")
     console.print(f"  project: {oa.paths.project_root}")
-    console.print("\nNext: [bold]openagent discover[/bold] to detect CLIs, "
-                  "or [bold]openagent provider add[/bold] to connect an API.")
+    console.print(
+        "\nNext: [bold]openagent discover[/bold] to detect CLIs, "
+        "or [bold]openagent provider add[/bold] to connect an API."
+    )
 
 
 @app.command("discover")
@@ -106,9 +109,12 @@ def add_agent(
     cli: str | None = typer.Option(None, "--cli", help="CLI type, e.g. codex/claude (CLI agent)."),
     tag: list[str] = typer.Option([], "--tag", help="Repeatable tag."),
     system_prompt: str = typer.Option("", "--system-prompt"),
-    profile: str = typer.Option("safe-edit", "--profile", help=f"One of: {', '.join(profile_names())}"),
+    profile: str = typer.Option(
+        "safe-edit", "--profile", help=f"One of: {', '.join(profile_names())}"
+    ),
     allow_unverified_model: bool = typer.Option(
-        False, "--allow-unverified-model",
+        False,
+        "--allow-unverified-model",
         help="Create the agent even though its model has no verified capability probe.",
     ),
 ) -> None:
@@ -120,26 +126,44 @@ def add_agent(
             # ``None`` means "use the CLI's own default". This path used to silently drop --model,
             # so a CLI agent could never be created with a pinned model from the CLI (item 10).
             agent = oa.agents.create(
-                name=name, title=title, description=description, runtime_type=RuntimeType.CLI,
-                cli=cli, model=model, tags=tag, system_prompt=system_prompt,
+                name=name,
+                title=title,
+                description=description,
+                runtime_type=RuntimeType.CLI,
+                cli=cli,
+                model=model,
+                tags=tag,
+                system_prompt=system_prompt,
                 permission_profile=profile,
             )
         else:
             if not oa.providers.get(provider or ""):
-                _fail(f"provider {provider!r} not found. Add it first: openagent provider add {provider} --type <type>")
+                _fail(
+                    f"provider {provider!r} not found. Add it first: openagent provider add {provider} --type <type>"
+                )
             _require_verified_model(oa, provider or "", model or "", allow_unverified_model)
             agent = oa.agents.create(
-                name=name, title=title, description=description, runtime_type=RuntimeType.API_AGENT,
-                provider=provider, model=model, tags=tag, system_prompt=system_prompt,
+                name=name,
+                title=title,
+                description=description,
+                runtime_type=RuntimeType.API_AGENT,
+                provider=provider,
+                model=model,
+                tags=tag,
+                system_prompt=system_prompt,
                 permission_profile=profile,
             )
     except AgentError as exc:
         _fail(str(exc))
-    console.print(f"[green]✓[/green] agent [bold]{safe_markup(agent.name)}[/bold] created; "
-                  "OPENAGENT.md updated")
+    console.print(
+        f"[green]✓[/green] agent [bold]{safe_markup(agent.name)}[/bold] created; "
+        "OPENAGENT.md updated"
+    )
     if allow_unverified_model and not cli:
-        console.print("[yellow]⚠ this agent's model was NOT verified agent-compatible "
-                      "(--allow-unverified-model). It may fail to operate OpenAgent tools.[/yellow]")
+        console.print(
+            "[yellow]⚠ this agent's model was NOT verified agent-compatible "
+            "(--allow-unverified-model). It may fail to operate OpenAgent tools.[/yellow]"
+        )
 
 
 def _require_verified_model(
@@ -185,8 +209,13 @@ def runs(limit: int = typer.Option(20, "--limit")) -> None:
     table = Table("ID", "Agent", "Status", "Started", "Files")
     for run in oa.runs.list(limit):
         status = enum_value(run.status)
-        table.add_row(safe_line(run.id), safe_line(run.agent), safe_line(status),
-                      run.started_at.strftime("%m-%d %H:%M"), str(len(run.files_changed)))
+        table.add_row(
+            safe_line(run.id),
+            safe_line(run.agent),
+            safe_line(status),
+            run.started_at.strftime("%m-%d %H:%M"),
+            str(len(run.files_changed)),
+        )
     console.print(table)
 
 
@@ -197,7 +226,9 @@ def run(
     worktree: str = typer.Option("auto", "--worktree", help="auto | none | copy"),
     profile: str | None = typer.Option(None, "--profile"),
     yes: bool = typer.Option(
-        False, "--yes", "-y",
+        False,
+        "--yes",
+        "-y",
         help="Approve high-risk operations non-interactively (records approval events).",
     ),
 ) -> None:
@@ -208,8 +239,13 @@ def run(
     oa = _app()
     oa.runs.recover_orphans()
     try:
-        run_obj = oa.runs.create(agent_name=name, prompt=prompt, worktree=worktree,
-                                 permission_profile=profile, confirm_in_place=yes)
+        run_obj = oa.runs.create(
+            agent_name=name,
+            prompt=prompt,
+            worktree=worktree,
+            permission_profile=profile,
+            confirm_in_place=yes,
+        )
     except RunError as exc:
         _fail(str(exc))
     console.print(f"[dim]run {run_obj.id} starting…[/dim]")
@@ -227,7 +263,9 @@ def run(
 @app.command()
 def output(
     id: str = typer.Option(..., "--id", help="Run id."),
-    format: str = typer.Option("md", "--format", help="md|json|diff|logs|events|handoff|status|tests"),
+    format: str = typer.Option(
+        "md", "--format", help="md|json|diff|logs|events|handoff|status|tests"
+    ),
 ) -> None:
     """Print a run artifact (spec §32)."""
     oa = _app()
@@ -257,7 +295,9 @@ def message(
 
 
 @app.command()
-def resume(id: str = typer.Option(..., "--id"), prompt: str = typer.Option("continue", "--prompt", "-p")) -> None:
+def resume(
+    id: str = typer.Option(..., "--id"), prompt: str = typer.Option("continue", "--prompt", "-p")
+) -> None:
     """Resume a run (spec §32)."""
     message(id=id, prompt=prompt)
 
@@ -275,14 +315,18 @@ def cancel(id: str = typer.Option(..., "--id")) -> None:
     if outcome is CancelOutcome.TERMINATED:
         console.print(f"[yellow]cancelled[/yellow] {safe_id} — process tree terminated")
     elif outcome is CancelOutcome.SIGNALLED:
-        console.print(f"[yellow]cancelling[/yellow] {safe_id} — the active turn was signalled to stop")
+        console.print(
+            f"[yellow]cancelling[/yellow] {safe_id} — the active turn was signalled to stop"
+        )
     elif outcome is CancelOutcome.ALREADY_TERMINAL:
         console.print(f"[dim]{safe_id} has already finished; nothing to cancel[/dim]")
     elif outcome is CancelOutcome.NOT_FOUND:
         _fail(f"run {id!r} not found")
     elif outcome is CancelOutcome.IDENTITY_MISMATCH:
-        _fail(f"{id}: the recorded process is gone or its PID was reused; refused to terminate an "
-              "unrelated process. The run was left untouched.")
+        _fail(
+            f"{id}: the recorded process is gone or its PID was reused; refused to terminate an "
+            "unrelated process. The run was left untouched."
+        )
     elif outcome is CancelOutcome.NOT_CANCELLABLE:
         _fail(f"{id}: orphaned run has no safely identifiable live process to cancel.")
 
@@ -297,8 +341,10 @@ def doctor(json_out: bool = typer.Option(False, "--json")) -> None:
         return
     marks = {"ok": "[green]✓[/green]", "warn": "[yellow]⚠[/yellow]", "fail": "[red]✗[/red]"}
     for check in checks:
-        console.print(f"{marks.get(check.status, '?')} {safe_markup(check.name)}"
-                      + (f" — [dim]{safe_markup(check.detail)}[/dim]" if check.detail else ""))
+        console.print(
+            f"{marks.get(check.status, '?')} {safe_markup(check.name)}"
+            + (f" — [dim]{safe_markup(check.detail)}[/dim]" if check.detail else "")
+        )
 
 
 @app.command("mcp")
@@ -314,12 +360,18 @@ def mcp(action: str = typer.Argument("serve")) -> None:
 def provider_add(
     name: str = typer.Argument(..., help="Connection name, e.g. deepseek-main."),
     type: str = typer.Option(..., "--type", help=f"Provider type: {', '.join(preset_names())}"),
-    protocol: str | None = typer.Option(None, "--protocol", help="openai-chat|openai-responses|anthropic-messages"),
+    protocol: str | None = typer.Option(
+        None, "--protocol", help="openai-chat|openai-responses|anthropic-messages"
+    ),
     base_url: str | None = typer.Option(None, "--base-url"),
     region: str | None = typer.Option(None, "--region"),
     workspace_id: str | None = typer.Option(None, "--workspace-id"),
-    key_env: str | None = typer.Option(None, "--key-env", help="Reference an env var instead of storing a key."),
-    no_key: bool = typer.Option(False, "--no-key", help="Local provider needs no key (e.g. ollama)."),
+    key_env: str | None = typer.Option(
+        None, "--key-env", help="Reference an env var instead of storing a key."
+    ),
+    no_key: bool = typer.Option(
+        False, "--no-key", help="Local provider needs no key (e.g. ollama)."
+    ),
 ) -> None:
     """Register an API provider. The key is prompted with hidden input (never passed as an argument)."""
     oa = _app()
@@ -331,21 +383,29 @@ def provider_add(
         # Hidden prompt only — a key is NEVER accepted as a command argument (spec §30, §9), so it
         # cannot land in shell history, `ps` output, or CI logs.
         preset = get_preset(type)
-        label = (preset.credential_label if preset and preset.credential_label else "API key")
+        label = preset.credential_label if preset and preset.credential_label else "API key"
         if preset and preset.credential_hint:
             console.print(f"[dim]{safe_markup(preset.credential_hint)}[/dim]")
         api_key = typer.prompt(f"{label} for {name}", hide_input=True)
     proto = Protocol(protocol) if protocol else None
     try:
         provider = oa.providers.add(
-            name=name, provider_type=type, protocol=proto, base_url=base_url,
-            api_key=api_key, key_env=key_env, credential_source=credential_source,
-            region=region, workspace_id=workspace_id,
+            name=name,
+            provider_type=type,
+            protocol=proto,
+            base_url=base_url,
+            api_key=api_key,
+            key_env=key_env,
+            credential_source=credential_source,
+            region=region,
+            workspace_id=workspace_id,
         )
     except ProviderValidationError as exc:
         _fail(str(exc))
-    console.print(f"[green]✓[/green] provider [bold]{safe_markup(name)}[/bold] added "
-                  f"({safe_markup(provider.provider_type)}, {safe_markup(provider.protocol.value)})")
+    console.print(
+        f"[green]✓[/green] provider [bold]{safe_markup(name)}[/bold] added "
+        f"({safe_markup(provider.provider_type)}, {safe_markup(provider.protocol.value)})"
+    )
     console.print(f"  test it: [bold]openagent provider test {safe_markup(name)}[/bold]")
 
 
@@ -359,8 +419,13 @@ def provider_list(json_out: bool = typer.Option(False, "--json")) -> None:
     table = Table("Name", "Type", "Protocol", "Base URL", "Key")
     for p in providers:
         cred = p.credential.type if isinstance(p.credential.type, str) else p.credential.type.value
-        table.add_row(safe_line(p.name), safe_line(p.provider_type), safe_line(p.protocol.value),
-                      safe_line(p.base_url or "(preset)"), safe_line(cred))
+        table.add_row(
+            safe_line(p.name),
+            safe_line(p.provider_type),
+            safe_line(p.protocol.value),
+            safe_line(p.base_url or "(preset)"),
+            safe_line(cred),
+        )
     console.print(table)
 
 
@@ -368,7 +433,8 @@ def provider_list(json_out: bool = typer.Option(False, "--json")) -> None:
 def provider_test(
     name: str = typer.Argument(...),
     model: str | None = typer.Option(
-        None, "--model", help="Also validate this model with a real capability probe."),
+        None, "--model", help="Also validate this model with a real capability probe."
+    ),
 ) -> None:
     """Check a provider connection (spec §18).
 
@@ -384,17 +450,23 @@ def provider_test(
     result = _run(oa.providers.test(name))
     if not result.ok:
         _fail(f"{name}: {result.detail}")
-    console.print(f"[green]✓[/green] {safe_markup(name)}: catalog reachable "
-                  f"([dim]{safe_markup(result.detail)}[/dim])")
+    console.print(
+        f"[green]✓[/green] {safe_markup(name)}: catalog reachable "
+        f"([dim]{safe_markup(result.detail)}[/dim])"
+    )
     console.print("[yellow]The API key and model inference have not yet been validated.[/yellow]")
-    console.print(f"  Validate them: [bold]openagent provider probe {safe_markup(name)} "
-                  "--model <publisher/model>[/bold]")
+    console.print(
+        f"  Validate them: [bold]openagent provider probe {safe_markup(name)} "
+        "--model <publisher/model>[/bold]"
+    )
 
 
 @provider_app.command("models")
 def provider_models(
     name: str = typer.Argument(...),
-    search: str | None = typer.Option(None, "--search", help="Filter by model id (local, no network)."),
+    search: str | None = typer.Option(
+        None, "--search", help="Filter by model id (local, no network)."
+    ),
     owner: str | None = typer.Option(None, "--owner", help="Filter by publisher (owned_by)."),
     json_out: bool = typer.Option(False, "--json", help="Machine-readable output."),
 ) -> None:
@@ -408,14 +480,23 @@ def provider_models(
     models = filter_models(_run(oa.providers.remote_models(name)), search=search, owner=owner)
     if json_out:
         # Emit verbatim: console.print_json would soft-wrap and corrupt machine-readable output.
-        typer.echo(json.dumps({
-            "provider": name,
-            "models": [{"id": m.id, "owned_by": m.owned_by, "capabilities": None} for m in models],
-        }, indent=2))
+        typer.echo(
+            json.dumps(
+                {
+                    "provider": name,
+                    "models": [
+                        {"id": m.id, "owned_by": m.owned_by, "capabilities": None} for m in models
+                    ],
+                },
+                indent=2,
+            )
+        )
         return
     if not models:
-        console.print("[yellow]no models returned (provider may lack a /models endpoint, or the "
-                      "filters matched nothing)[/yellow]")
+        console.print(
+            "[yellow]no models returned (provider may lack a /models endpoint, or the "
+            "filters matched nothing)[/yellow]"
+        )
         return
     preset = get_preset(_provider_type(oa, name))
     if preset is not None and preset.catalog_is_mixed:
@@ -429,8 +510,10 @@ def provider_models(
         note = "may not be a chat model" if looks_non_chat(m.id) else ""
         table.add_row(safe_line(m.id), safe_line(m.owned_by or "—"), note)
     console.print(table)
-    console.print(f"[dim]{len(models)} model(s). Capabilities are unknown until probed:[/dim] "
-                  f"[bold]openagent provider probe {safe_markup(name)} --model <id>[/bold]")
+    console.print(
+        f"[dim]{len(models)} model(s). Capabilities are unknown until probed:[/dim] "
+        f"[bold]openagent provider probe {safe_markup(name)} --model <id>[/bold]"
+    )
 
 
 @provider_app.command("probe")
@@ -459,7 +542,11 @@ def _print_probe(name: str, model: str, *, json_out: bool, refresh: bool) -> Non
         typer.echo(json.dumps({"provider": name, **probe.to_dict()}, indent=2))
     else:
         caps = probe.capabilities
-        mark = {True: "[green]yes[/green]", False: "[red]no[/red]", None: "[yellow]unverified[/yellow]"}
+        mark = {
+            True: "[green]yes[/green]",
+            False: "[red]no[/red]",
+            None: "[yellow]unverified[/yellow]",
+        }
         console.print(f"[bold]{safe_markup(name)}[/bold] · {safe_markup(model)}")
         console.print(f"  text:         {mark[bool(caps.text)]}")
         console.print(f"  streaming:    {mark[caps.streaming]}")
@@ -494,8 +581,12 @@ def provider_presets() -> None:
     """List built-in provider presets (spec §12–§24)."""
     table = Table("Type", "Label", "Protocol", "Needs key")
     for preset in PRESETS.values():
-        table.add_row(preset.provider_type, preset.label, preset.protocol.value,
-                      "yes" if preset.needs_key else "no")
+        table.add_row(
+            preset.provider_type,
+            preset.label,
+            preset.protocol.value,
+            "yes" if preset.needs_key else "no",
+        )
     console.print(table)
 
 
@@ -514,14 +605,24 @@ def agent_add(
     system_prompt: str = typer.Option("", "--system-prompt"),
     profile: str = typer.Option("safe-edit", "--profile"),
     allow_unverified_model: bool = typer.Option(
-        False, "--allow-unverified-model",
+        False,
+        "--allow-unverified-model",
         help="Create the agent even though its model has no verified capability probe.",
     ),
 ) -> None:
     """Add an agent (same as top-level `add`)."""
-    add_agent(name=name, title=title, description=description, provider=provider, model=model,
-              cli=cli, tag=tag, system_prompt=system_prompt, profile=profile,
-              allow_unverified_model=allow_unverified_model)
+    add_agent(
+        name=name,
+        title=title,
+        description=description,
+        provider=provider,
+        model=model,
+        cli=cli,
+        tag=tag,
+        system_prompt=system_prompt,
+        profile=profile,
+        allow_unverified_model=allow_unverified_model,
+    )
 
 
 @agent_app.command("list")
@@ -558,8 +659,13 @@ def _print_agents(oa: OpenAgentApp, json_out: bool) -> None:
         rt = a.runtime
         rtype = rt.type if isinstance(rt.type, str) else rt.type.value
         runtime = f"{rt.cli}-cli" if rtype == "cli" else f"api:{rt.provider}"
-        table.add_row(safe_line(a.name), safe_line(a.title or "—"), safe_line(runtime),
-                      safe_line(", ".join(a.tags) or "—"), safe_line(a.permission_profile))
+        table.add_row(
+            safe_line(a.name),
+            safe_line(a.title or "—"),
+            safe_line(runtime),
+            safe_line(", ".join(a.tags) or "—"),
+            safe_line(a.permission_profile),
+        )
     console.print(table)
 
 

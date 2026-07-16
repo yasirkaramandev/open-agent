@@ -39,14 +39,21 @@ FAKE_KEY = "nvapi-THIS_IS_A_FAKE_TEST_KEY_123456"
 
 
 def adapter(**kwargs) -> OpenAIChatAdapter:
-    return OpenAIChatAdapter(base_url=BASE, api_key=FAKE_KEY, provider_type="nvidia-build",
-                             compat=get_compat("nvidia-build"), **kwargs)
+    return OpenAIChatAdapter(
+        base_url=BASE,
+        api_key=FAKE_KEY,
+        provider_type="nvidia-build",
+        compat=get_compat("nvidia-build"),
+        **kwargs,
+    )
 
 
 def req(stream: bool = False, tools=None) -> NormalizedModelRequest:
     return NormalizedModelRequest(
-        model="nvidia/nemotron-test", messages=[Message(role=Role.USER, content="hi")],
-        tools=tools or [], stream=stream,
+        model="nvidia/nemotron-test",
+        messages=[Message(role=Role.USER, content="hi")],
+        tools=tools or [],
+        stream=stream,
     )
 
 
@@ -74,14 +81,23 @@ def test_nvidia_preset_matches_the_official_contract():
 async def test_stream_options_is_not_sent_by_default(httpx_mock: HTTPXMock):
     """``stream_options`` is undocumented in NVIDIA's official examples — do not send it (§11)."""
 
-    httpx_mock.add_response(content=sse([{"id": "c1", "choices": [{"delta": {"content": "ok"}}]}]),
-                            headers={"content-type": "text/event-stream"})
+    httpx_mock.add_response(
+        content=sse([{"id": "c1", "choices": [{"delta": {"content": "ok"}}]}]),
+        headers={"content-type": "text/event-stream"},
+    )
     await collect(adapter().stream_response(req(stream=True)))
     sent = json.loads(httpx_mock.get_requests()[0].content)
     assert "stream_options" not in sent
     # Only the common OpenAI-compatible fields are sent for the base integration (§11).
-    assert set(sent) <= {"model", "messages", "tools", "tool_choice", "temperature",
-                         "max_tokens", "stream"}
+    assert set(sent) <= {
+        "model",
+        "messages",
+        "tools",
+        "tool_choice",
+        "temperature",
+        "max_tokens",
+        "stream",
+    }
 
 
 # --------------------------------------------------------------------------- §20.1 catalog
@@ -102,7 +118,10 @@ async def test_catalog_lists_every_entry_and_preserves_owned_by(httpx_mock: HTTP
     httpx_mock.add_response(json=_CATALOG)
     models = await adapter().list_models()
     assert [m.id for m in models] == [
-        "nvidia/nemotron-test", "nvidia/embed-test", "meta/vision-test", "deepseek-ai/chat-test",
+        "nvidia/nemotron-test",
+        "nvidia/embed-test",
+        "meta/vision-test",
+        "deepseek-ai/chat-test",
     ]
     assert [m.owned_by for m in models] == ["nvidia", "nvidia", "meta", "deepseek-ai"]
 
@@ -142,8 +161,9 @@ def test_non_chat_hints_are_warnings_not_verdicts():
 
 @pytest.mark.parametrize("status", [401, 403])
 async def test_auth_errors_never_leak_the_key(httpx_mock: HTTPXMock, status: int):
-    httpx_mock.add_response(status_code=status,
-                            json={"error": {"message": "invalid api key supplied"}})
+    httpx_mock.add_response(
+        status_code=status, json={"error": {"message": "invalid api key supplied"}}
+    )
     result = await collect(adapter().stream_response(req()))
     assert result.is_error
     assert result.error_type in ("authentication_failed", "permission_denied")
@@ -164,30 +184,52 @@ async def test_probe_reports_unauthorized_for_a_rejected_key(httpx_mock: HTTPXMo
 
 
 async def test_normal_text_completion(httpx_mock: HTTPXMock):
-    httpx_mock.add_response(json={
-        "id": "c1", "choices": [{"message": {"role": "assistant", "content": "hello"}}],
-        "usage": {"prompt_tokens": 4, "completion_tokens": 2},
-    })
+    httpx_mock.add_response(
+        json={
+            "id": "c1",
+            "choices": [{"message": {"role": "assistant", "content": "hello"}}],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+        }
+    )
     result = await collect(adapter().stream_response(req()))
     assert result.text == "hello"
     assert result.usage.input_tokens == 4
 
 
 async def test_sse_streaming(httpx_mock: HTTPXMock):
-    httpx_mock.add_response(content=sse([
-        {"id": "c1", "choices": [{"delta": {"content": "Hel"}}]},
-        {"id": "c1", "choices": [{"delta": {"content": "lo"}}]},
-    ]), headers={"content-type": "text/event-stream"})
+    httpx_mock.add_response(
+        content=sse(
+            [
+                {"id": "c1", "choices": [{"delta": {"content": "Hel"}}]},
+                {"id": "c1", "choices": [{"delta": {"content": "lo"}}]},
+            ]
+        ),
+        headers={"content-type": "text/event-stream"},
+    )
     result = await collect(adapter().stream_response(req(stream=True)))
     assert result.text == "Hello"
 
 
 async def test_tool_call_response(httpx_mock: HTTPXMock):
-    httpx_mock.add_response(json={"id": "c1", "choices": [{"message": {
-        "content": None,
-        "tool_calls": [{"id": "call_1", "type": "function",
-                        "function": {"name": "ping", "arguments": json.dumps({"value": 1})}}],
-    }}]})
+    httpx_mock.add_response(
+        json={
+            "id": "c1",
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "ping", "arguments": json.dumps({"value": 1})},
+                            }
+                        ],
+                    }
+                }
+            ],
+        }
+    )
     result = await collect(adapter().stream_response(req(tools=[{"name": "ping"}])))
     assert result.tool_calls[0].name == "ping"
     assert result.tool_calls[0].arguments == {"value": 1}
@@ -196,13 +238,29 @@ async def test_tool_call_response(httpx_mock: HTTPXMock):
 async def test_probe_verified_when_all_three_capabilities_observed(httpx_mock: HTTPXMock):
     # 1) text (non-stream)  2) streaming  3) tool call
     httpx_mock.add_response(json={"id": "c1", "choices": [{"message": {"content": "ok"}}]})
-    httpx_mock.add_response(content=sse([{"id": "c1", "choices": [{"delta": {"content": "ok"}}]}]),
-                            headers={"content-type": "text/event-stream"})
-    httpx_mock.add_response(json={"id": "c1", "choices": [{"message": {
-        "content": None,
-        "tool_calls": [{"id": "t1", "type": "function",
-                        "function": {"name": "ping", "arguments": "{}"}}],
-    }}]})
+    httpx_mock.add_response(
+        content=sse([{"id": "c1", "choices": [{"delta": {"content": "ok"}}]}]),
+        headers={"content-type": "text/event-stream"},
+    )
+    httpx_mock.add_response(
+        json={
+            "id": "c1",
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "t1",
+                                "type": "function",
+                                "function": {"name": "ping", "arguments": "{}"},
+                            }
+                        ],
+                    }
+                }
+            ],
+        }
+    )
     probe = await probe_agent_model(adapter(), "nvidia/nemotron-test")
     assert probe.category == PROBE_VERIFIED
     assert probe.agent_compatible is True
@@ -215,8 +273,10 @@ async def test_probe_partial_when_tool_calling_is_unsupported(httpx_mock: HTTPXM
     """Text works but no tool call comes back → partial, and NEVER agent_compatible (§15.3)."""
 
     httpx_mock.add_response(json={"id": "c1", "choices": [{"message": {"content": "ok"}}]})
-    httpx_mock.add_response(content=sse([{"id": "c1", "choices": [{"delta": {"content": "ok"}}]}]),
-                            headers={"content-type": "text/event-stream"})
+    httpx_mock.add_response(
+        content=sse([{"id": "c1", "choices": [{"delta": {"content": "ok"}}]}]),
+        headers={"content-type": "text/event-stream"},
+    )
     httpx_mock.add_response(json={"id": "c1", "choices": [{"message": {"content": "I cannot"}}]})
     probe = await probe_agent_model(adapter(), "nvidia/nemotron-test")
     assert probe.category == PROBE_PARTIAL
@@ -267,7 +327,7 @@ async def test_async_202_is_rejected_not_treated_as_empty_success(httpx_mock: HT
 
 
 async def test_malformed_sse_is_safe(httpx_mock: HTTPXMock):
-    body = b"data: {not valid json\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"
+    body = b'data: {not valid json\n\ndata: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
     httpx_mock.add_response(content=body, headers={"content-type": "text/event-stream"})
     result = await collect(adapter().stream_response(req(stream=True)))
     assert result.text == "ok"  # the unparseable frame is skipped, not fatal
@@ -308,21 +368,44 @@ async def test_raw_reasoning_content_is_never_surfaced(httpx_mock: HTTPXMock):
     Only the final ``content`` is a user-visible message.
     """
 
-    httpx_mock.add_response(content=sse([
-        {"choices": [{"delta": {"reasoning_content": "PRIVATE INTERNAL REASONING",
-                                "content": None}}]},
-        {"choices": [{"delta": {"content": "Safe final answer"}}]},
-    ]), headers={"content-type": "text/event-stream"})
+    httpx_mock.add_response(
+        content=sse(
+            [
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "reasoning_content": "PRIVATE INTERNAL REASONING",
+                                "content": None,
+                            }
+                        }
+                    ]
+                },
+                {"choices": [{"delta": {"content": "Safe final answer"}}]},
+            ]
+        ),
+        headers={"content-type": "text/event-stream"},
+    )
     result = await collect(adapter().stream_response(req(stream=True)))
     assert result.text == "Safe final answer"
     assert "PRIVATE INTERNAL REASONING" not in result.text
 
 
 async def test_non_streaming_reasoning_field_is_ignored(httpx_mock: HTTPXMock):
-    httpx_mock.add_response(json={"id": "c1", "choices": [{"message": {
-        "role": "assistant", "reasoning_content": "PRIVATE INTERNAL REASONING",
-        "content": "Safe final answer",
-    }}]})
+    httpx_mock.add_response(
+        json={
+            "id": "c1",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "reasoning_content": "PRIVATE INTERNAL REASONING",
+                        "content": "Safe final answer",
+                    }
+                }
+            ],
+        }
+    )
     result = await collect(adapter().stream_response(req()))
     assert result.text == "Safe final answer"
     assert "PRIVATE" not in result.text
@@ -331,11 +414,17 @@ async def test_non_streaming_reasoning_field_is_ignored(httpx_mock: HTTPXMock):
 async def test_numeric_reasoning_tokens_are_normalized_without_any_text(httpx_mock: HTTPXMock):
     """Only the reasoning token *count* may be kept — never reasoning text (§12)."""
 
-    httpx_mock.add_response(json={
-        "id": "c1", "choices": [{"message": {"content": "ok"}}],
-        "usage": {"prompt_tokens": 4, "completion_tokens": 9,
-                  "completion_tokens_details": {"reasoning_tokens": 7}},
-    })
+    httpx_mock.add_response(
+        json={
+            "id": "c1",
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {
+                "prompt_tokens": 4,
+                "completion_tokens": 9,
+                "completion_tokens_details": {"reasoning_tokens": 7},
+            },
+        }
+    )
     result = await collect(adapter().stream_response(req()))
     assert result.usage.reasoning_tokens == 7
     assert result.text == "ok"

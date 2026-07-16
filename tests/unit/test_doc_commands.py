@@ -17,7 +17,11 @@ from typer.testing import CliRunner
 from openagent.cli.app import app
 
 _ROOT = Path(__file__).resolve().parents[2]
-_DOCS = [_ROOT / "README.md", _ROOT / "skills" / "openagent" / "SKILL.md", _ROOT / "skills" / "README.md"]
+_DOCS = [
+    _ROOT / "README.md",
+    _ROOT / "skills" / "openagent" / "SKILL.md",
+    _ROOT / "skills" / "README.md",
+]
 
 #: The two command *groups*; everything else is a single top-level command.
 _GROUPS = {"provider", "agent"}
@@ -54,7 +58,9 @@ def _command_path(rest: str) -> list[str] | None:
     return [tokens[0]]
 
 
-def _documented() -> tuple[list[tuple[str, tuple[str, ...]]], list[tuple[str, tuple[str, ...], str]]]:
+def _documented() -> tuple[
+    list[tuple[str, tuple[str, ...]]], list[tuple[str, tuple[str, ...], str]]
+]:
     """Return (command paths, flag usages) documented across the docs."""
 
     paths: dict[tuple[str, ...], str] = {}
@@ -97,7 +103,8 @@ def test_documented_command_is_accepted(source: str, path: tuple[str, ...]) -> N
 
 
 @pytest.mark.parametrize(
-    ("source", "path", "flag"), _FLAG_CASES,
+    ("source", "path", "flag"),
+    _FLAG_CASES,
     ids=[f"{' '.join(p)} {f}" for _, p, f in _FLAG_CASES],
 )
 def test_documented_flag_exists(source: str, path: tuple[str, ...], flag: str) -> None:

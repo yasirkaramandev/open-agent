@@ -87,6 +87,7 @@ class WizardRadioSet(RadioSet):
             event.stop()
             self.post_message(self.Advance())
 
+
 try:  # keyring errors are environment-dependent; treat them as expected/recoverable when present
     from keyring.errors import KeyringError as _KeyringError
 except Exception:  # pragma: no cover - keyring optional
@@ -151,8 +152,8 @@ class AddAgentScreen(Screen):
         #: What the currently-shown model list was discovered for — so switching CLI/provider resets
         #: it and a stale model never leaks across backends (item 11).
         self._model_context: tuple[str, ...] | None = None
-        self._model_method = ""          # e.g. "agy models" / "provider models"
-        self._model_status = "default"   # discovered | manual | default (shown on Review)
+        self._model_method = ""  # e.g. "agy models" / "provider models"
+        self._model_status = "default"  # discovered | manual | default (shown on Review)
         #: The full discovered catalog, kept so search/publisher filtering is purely local (§14.2).
         self._catalog: list[RemoteModel] = []
         #: The last real capability probe — the ONLY thing that may call a model agent-compatible.
@@ -175,7 +176,8 @@ class AddAgentScreen(Screen):
                 with WizardRadioSet(id="backend"):
                     yield RadioButton(
                         "CLI Agent — use an installed coding CLI (Codex, Claude Code, Antigravity)",
-                        value=True, id="backend-cli",
+                        value=True,
+                        id="backend-cli",
                     )
                     yield RadioButton(
                         "API Model — connect OpenAI, Anthropic, DeepSeek, Qwen, Ollama, or another "
@@ -195,8 +197,9 @@ class AddAgentScreen(Screen):
                 yield Static("Choose an API provider", classes="hint")
                 with WizardRadioSet(id="provider"):
                     for name in self._preset_values:
-                        yield RadioButton(_preset_label(name), value=(name == "openai"),
-                                          id=f"preset-{name}")
+                        yield RadioButton(
+                            _preset_label(name), value=(name == "openai"), id=f"preset-{name}"
+                        )
                 yield Static("", id="provider-detail", classes="card")
 
             # ---- Step 3B: connection --------------------------------------
@@ -211,8 +214,12 @@ class AddAgentScreen(Screen):
                     yield Label("Provider connection")
                     # Populated in _sync_connection_fields, filtered to the selected provider family:
                     # offering an Anthropic card a `deepseek-main` connection is a guaranteed failure.
-                    yield Select([], id="existing-provider",
-                                 allow_blank=True, prompt="select a saved connection")
+                    yield Select(
+                        [],
+                        id="existing-provider",
+                        allow_blank=True,
+                        prompt="select a saved connection",
+                    )
                     yield Label("", id="err-provider", classes="field-error")
 
                 with Vertical(id="conn-new"):
@@ -256,9 +263,15 @@ class AddAgentScreen(Screen):
                 # alike — a listing is never a capability claim (§14.3).
                 yield Static("", id="catalog-warning", classes="warning")
                 with WizardRadioSet(id="model-mode"):
-                    yield RadioButton("Choose a discovered model", value=True, id="model-mode-discovered")
-                    yield RadioButton("Enter a model ID manually (not verified)", id="model-mode-manual")
-                    yield RadioButton("Use the CLI's default model (CLI agents only)", id="model-mode-default")
+                    yield RadioButton(
+                        "Choose a discovered model", value=True, id="model-mode-discovered"
+                    )
+                    yield RadioButton(
+                        "Enter a model ID manually (not verified)", id="model-mode-manual"
+                    )
+                    yield RadioButton(
+                        "Use the CLI's default model (CLI agents only)", id="model-mode-default"
+                    )
                 # Local search + publisher filter: a big catalog is unusable as a flat Select, and
                 # typing must never trigger a network call (§14.2).
                 with Vertical(id="catalog-filters"):
@@ -266,8 +279,12 @@ class AddAgentScreen(Screen):
                     yield Input(placeholder="filter by model id (local)", id="model-search")
                     yield Label("Publisher")
                     yield Select([], id="model-owner", allow_blank=True, prompt="all publishers")
-                yield Select([], id="model_select", allow_blank=True,
-                             prompt="discovered models (Refresh to load)")
+                yield Select(
+                    [],
+                    id="model_select",
+                    allow_blank=True,
+                    prompt="discovered models (Refresh to load)",
+                )
                 yield Input(placeholder="model id/label, e.g. publisher/model", id="model")
                 yield Static("", id="model-status", classes="hint")
                 yield Static("", id="model-verify", classes="hint")
@@ -275,8 +292,11 @@ class AddAgentScreen(Screen):
                     yield Button("Refresh Catalog", id="model-refresh")
                     yield Button("Validate Model & Key", id="model-validate")
                     yield Button("Open model page", id="open-model-page")
-                yield Checkbox("Create as unverified/limited model (advanced)", value=False,
-                               id="allow-unverified")
+                yield Checkbox(
+                    "Create as unverified/limited model (advanced)",
+                    value=False,
+                    id="allow-unverified",
+                )
                 yield Label("", id="err-model", classes="field-error")
 
             # ---- Agent Details step (common fields) -----------------------
@@ -339,8 +359,15 @@ class AddAgentScreen(Screen):
 
     def _show_step(self, step: str) -> None:
         self.step = step
-        for sid in ("step-backend", "step-cli", "step-provider", "step-connection",
-                    "step-model", "common-fields", "step-review"):
+        for sid in (
+            "step-backend",
+            "step-cli",
+            "step-provider",
+            "step-connection",
+            "step-model",
+            "common-fields",
+            "step-review",
+        ):
             self.query_one(f"#{sid}").display = False
 
         if step == "backend":
@@ -370,8 +397,12 @@ class AddAgentScreen(Screen):
     def _update_indicator(self) -> None:
         steps = self._step_list()
         titles = {
-            "backend": "Backend", "cli": "CLI", "provider": "Provider",
-            "connection": "Connection", "model": "Model", "details": "Agent details",
+            "backend": "Backend",
+            "cli": "CLI",
+            "provider": "Provider",
+            "connection": "Connection",
+            "model": "Model",
+            "details": "Agent details",
             "review": "Review",
         }
         idx = steps.index(self.step) + 1
@@ -387,8 +418,12 @@ class AddAgentScreen(Screen):
 
     def _focus_step(self, step: str) -> None:
         focus_map = {
-            "backend": "#backend", "cli": "#cli", "provider": "#provider",
-            "connection": "#conn-mode", "model": "#model-mode", "details": "#name",
+            "backend": "#backend",
+            "cli": "#cli",
+            "provider": "#provider",
+            "connection": "#conn-mode",
+            "model": "#model-mode",
+            "details": "#name",
             "review": "#create",
         }
         try:
@@ -483,7 +518,9 @@ class AddAgentScreen(Screen):
 
     def _capture_step(self, step: str, *, validate: bool = True) -> bool:
         if step == "backend":
-            self.state.set_backend("api" if self._radio_value("#backend", self._backend_values) == "api" else "cli")
+            self.state.set_backend(
+                "api" if self._radio_value("#backend", self._backend_values) == "api" else "cli"
+            )
             return True
         if step == "cli":
             cli = self._radio_value("#cli", self._cli_values)
@@ -553,8 +590,10 @@ class AddAgentScreen(Screen):
         env_var = self._input("key_env") or None
         try:
             resolve_credential(
-                name=conn_name, provider_type=self.state.provider_type or "custom",
-                api_key=key or None, key_env=env_var,
+                name=conn_name,
+                provider_type=self.state.provider_type or "custom",
+                api_key=key or None,
+                key_env=env_var,
                 credential_source=cred,
             )
         except ProviderValidationError as exc:
@@ -565,8 +604,10 @@ class AddAgentScreen(Screen):
         # An env-var credential that does not exist is a guaranteed failure at run time — say so
         # here, where the user can fix it, and never echo the value (§13.3).
         if cred == "env" and env_var and env_var not in os.environ:
-            message = (f"environment variable {env_var} is not set in this environment — export it "
-                       "first, or use the OS keychain instead")
+            message = (
+                f"environment variable {env_var} is not set in this environment — export it "
+                "first, or use the OS keychain instead"
+            )
             self._field_error("err-conn", message)
             self._status(f"[red]✗ {safe_markup(message, 200)}[/red]")
             return False
@@ -625,12 +666,16 @@ class AddAgentScreen(Screen):
     def _model_info_text(self) -> str:
         s = self.state
         if s.backend_type == "cli":
-            return (f"[b]Backend:[/b] CLI · {safe_markup(s.cli_type or '')}\n"
-                    "Discovery: Refresh to list models (if the CLI exposes them), or enter an id / "
-                    "use the CLI default.")
+            return (
+                f"[b]Backend:[/b] CLI · {safe_markup(s.cli_type or '')}\n"
+                "Discovery: Refresh to list models (if the CLI exposes them), or enter an id / "
+                "use the CLI default."
+            )
         conn = s.provider_name or "(new connection)"
-        return (f"[b]Backend:[/b] API · {safe_markup(conn)}\n"
-                "Discovery: the provider's models endpoint (best-effort). A model is required.")
+        return (
+            f"[b]Backend:[/b] API · {safe_markup(conn)}\n"
+            "Discovery: the provider's models endpoint (best-effort). A model is required."
+        )
 
     def _sync_model_fields(self) -> None:
         mode = self._radio_value("#model-mode", _MODEL_MODES) or "discovered"
@@ -668,8 +713,10 @@ class AddAgentScreen(Screen):
         if not models:
             self._set_model_status("[yellow]no catalog model matches these filters[/yellow]")
         else:
-            self._set_model_status(f"[green]{len(models)} of {len(self._catalog)} model(s)[/green]"
-                                   " — pick one, then Validate Model & Key")
+            self._set_model_status(
+                f"[green]{len(models)} of {len(self._catalog)} model(s)[/green]"
+                " — pick one, then Validate Model & Key"
+            )
 
     def _open_url(self, url: str) -> None:
         """Open a URL with Python's cross-platform webbrowser — never a shell command (§13.4)."""
@@ -683,7 +730,9 @@ class AddAgentScreen(Screen):
             self.notify(f"opened {url}")
         else:
             # Fall back to showing a copyable address rather than pretending it worked.
-            self._set_model_status(f"could not open a browser — copy this address: {safe_markup(url)}")
+            self._set_model_status(
+                f"could not open a browser — copy this address: {safe_markup(url)}"
+            )
             self.notify(f"could not open a browser — copy this address: {url}", severity="warning")
 
     def _validate_model(self) -> None:
@@ -708,8 +757,12 @@ class AddAgentScreen(Screen):
                 probe = await oa.providers.probe_model(s.provider_name, model, refresh=True)
             else:
                 probe = await oa.providers.probe_model_config(
-                    model_id=model, provider_type=s.provider_type or "custom", protocol=s.protocol,
-                    base_url=s.base_url, region=s.region, workspace_id=s.workspace_id,
+                    model_id=model,
+                    provider_type=s.provider_type or "custom",
+                    protocol=s.protocol,
+                    base_url=s.base_url,
+                    region=s.region,
+                    workspace_id=s.workspace_id,
                     api_key=s.api_key.get_secret_value() if s.api_key else None,
                     key_env=s.key_env,
                 )
@@ -726,8 +779,10 @@ class AddAgentScreen(Screen):
         probe = self._probe
         if probe is None:
             return "not validated"
-        return "verified agent compatible" if probe.agent_compatible else (
-            f"NOT verified ({probe.category})"
+        return (
+            "verified agent compatible"
+            if probe.agent_compatible
+            else (f"NOT verified ({probe.category})")
         )
 
     def _refresh_models(self) -> None:
@@ -757,12 +812,16 @@ class AddAgentScreen(Screen):
             return
         if not result.models:
             select.set_options([])
-            self._set_model_status("[yellow]no models reported — enter an id, or use the CLI default[/yellow]")
+            self._set_model_status(
+                "[yellow]no models reported — enter an id, or use the CLI default[/yellow]"
+            )
             return
         self._model_method = result.method or ""
         select.set_options([(m, m) for m in result.models])
         via = f" (via {safe_markup(result.method)})" if result.method else ""
-        self._set_model_status(f"[green]found {len(result.models)} model(s){via}[/green] — pick one below")
+        self._set_model_status(
+            f"[green]found {len(result.models)} model(s){via}[/green] — pick one below"
+        )
 
     async def _do_discover_api(self) -> None:
         oa = self.app.oa  # type: ignore[attr-defined]
@@ -772,13 +831,18 @@ class AddAgentScreen(Screen):
                 models = await oa.providers.remote_models(s.provider_name)
             else:
                 models = await oa.providers.remote_models_config(
-                    provider_type=s.provider_type or "custom", protocol=s.protocol,
-                    base_url=s.base_url, region=s.region, workspace_id=s.workspace_id,
+                    provider_type=s.provider_type or "custom",
+                    protocol=s.protocol,
+                    base_url=s.base_url,
+                    region=s.region,
+                    workspace_id=s.workspace_id,
                     api_key=s.api_key.get_secret_value() if s.api_key else None,
                     key_env=s.key_env,
                 )
         except Exception as exc:  # noqa: BLE001 - discovery is best-effort
-            self._set_model_status(f"[red]could not load models: {safe_markup(str(exc), 200)}[/red]")
+            self._set_model_status(
+                f"[red]could not load models: {safe_markup(str(exc), 200)}[/red]"
+            )
             self.query_one("#model_select", Select).set_options([])
             return
         self._apply_api_models(models)
@@ -788,7 +852,9 @@ class AddAgentScreen(Screen):
         self._catalog = list(models)
         if not self._catalog:
             select.set_options([])
-            self._set_model_status("[yellow]no models reported — enter a model id manually below[/yellow]")
+            self._set_model_status(
+                "[yellow]no models reported — enter a model id manually below[/yellow]"
+            )
             return
         self._model_method = "provider models"
         # Populate the publisher filter from what the catalog actually reported (§14.2).
@@ -847,8 +913,11 @@ class AddAgentScreen(Screen):
             return True  # explicit advanced override — surfaced loudly on Review
         probe = self._probe
         if probe is None or probe.model != model:
-            hint = (" This model id looks like it may not be a chat model."
-                    if looks_non_chat(model) else "")
+            hint = (
+                " This model id looks like it may not be a chat model."
+                if looks_non_chat(model)
+                else ""
+            )
             self._field_error(
                 "err-model",
                 f"{model} has not been validated — press 'Validate Model & Key' first.{hint}",
@@ -868,10 +937,16 @@ class AddAgentScreen(Screen):
         else:
             backend = f"API · {safe_markup(s.provider_name or '(new connection)')} ({s.provider_mode or 'new'})"
         model = safe_markup(s.model) if s.model else "(CLI default — no pinned model)"
-        status = {"discovered": "discovered", "manual": "manual — not verified",
-                  "default": "CLI default"}.get(self._model_status, self._model_status)
-        method = f" · via {safe_markup(self._model_method)}" if (s.model and self._model_method
-                                                                 and self._model_status == "discovered") else ""
+        status = {
+            "discovered": "discovered",
+            "manual": "manual — not verified",
+            "default": "CLI default",
+        }.get(self._model_status, self._model_status)
+        method = (
+            f" · via {safe_markup(self._model_method)}"
+            if (s.model and self._model_method and self._model_status == "discovered")
+            else ""
+        )
         lines = [
             f"[b]Backend:[/b] {backend}",
             f"[b]Model:[/b] {model}  [dim]({status}{method})[/dim]",
@@ -908,16 +983,29 @@ class AddAgentScreen(Screen):
         oa = self.app.oa  # type: ignore[attr-defined]
         s = self.state
         common = {
-            "title": s.title, "description": s.description, "tags": s.tags,
-            "system_prompt": s.system_prompt, "permission_profile": s.permission_profile,
+            "title": s.title,
+            "description": s.description,
+            "tags": s.tags,
+            "system_prompt": s.system_prompt,
+            "permission_profile": s.permission_profile,
             "max_steps": s.max_steps,
         }
         if s.backend_type == "cli":
-            agent = oa.agents.create(name=s.agent_name, runtime_type=RuntimeType.CLI,
-                                     cli=s.cli_type, model=s.model, **common)
+            agent = oa.agents.create(
+                name=s.agent_name,
+                runtime_type=RuntimeType.CLI,
+                cli=s.cli_type,
+                model=s.model,
+                **common,
+            )
         elif s.provider_mode == "existing":
-            agent = oa.agents.create(name=s.agent_name, runtime_type=RuntimeType.API_AGENT,
-                                     provider=s.provider_name, model=s.model, **common)
+            agent = oa.agents.create(
+                name=s.agent_name,
+                runtime_type=RuntimeType.API_AGENT,
+                provider=s.provider_name,
+                model=s.model,
+                **common,
+            )
         else:
             agent = self._create_with_new_connection(common)
             if agent is None:
@@ -937,17 +1025,26 @@ class AddAgentScreen(Screen):
             return None
         try:
             return oa.agents.create_with_new_provider(
-                provider_name=s.provider_name, provider_type=s.provider_type, protocol=s.protocol,
-                base_url=s.base_url, region=s.region, workspace_id=s.workspace_id,
+                provider_name=s.provider_name,
+                provider_type=s.provider_type,
+                protocol=s.protocol,
+                base_url=s.base_url,
+                region=s.region,
+                workspace_id=s.workspace_id,
                 api_key=s.api_key.get_secret_value() if s.api_key else None,
-                key_env=s.key_env, credential_source=s.credential_source,
-                model=s.model, name=s.agent_name, **common,
+                key_env=s.key_env,
+                credential_source=s.credential_source,
+                model=s.model,
+                name=s.agent_name,
+                **common,
             )
         except ProviderValidationError as exc:
             # A credential/connection problem sends the user back to the connection step to fix it.
             if exc.field in ("api_key", "key_env"):
                 self._show_step("connection")
-                self.query_one("#conn-status", Static).update(f"[red]✗ {safe_markup(str(exc), 200)}[/red]")
+                self.query_one("#conn-status", Static).update(
+                    f"[red]✗ {safe_markup(str(exc), 200)}[/red]"
+                )
                 self._field_error("err-conn", str(exc))
             self._summary([str(exc)])
             return None
@@ -1018,7 +1115,15 @@ class AddAgentScreen(Screen):
         the state are cleared together, always.
         """
 
-        for wid in ("conn_name", "base_url", "region", "workspace_id", "api_key", "key_env", "model"):
+        for wid in (
+            "conn_name",
+            "base_url",
+            "region",
+            "workspace_id",
+            "api_key",
+            "key_env",
+            "model",
+        ):
             try:
                 self.query_one(f"#{wid}", Input).value = ""
             except Exception:  # pragma: no cover - widget always present
@@ -1091,8 +1196,11 @@ class AddAgentScreen(Screen):
                 "3. Click Generate API Key / Get API Key.\n"
                 f"4. Paste the key here, or save it as {safe_markup(preset.default_env_var or '')}.\n"
                 "5. Never put the key directly in a command.\n"
-                + (f"[dim]{safe_markup(preset.credential_hint or '')}[/dim]"
-                   if preset.credential_hint else "")
+                + (
+                    f"[dim]{safe_markup(preset.credential_hint or '')}[/dim]"
+                    if preset.credential_hint
+                    else ""
+                )
             )
         # Sensible provider-aware defaults the user can still override.
         name_input = self.query_one("#conn_name", Input)
@@ -1114,8 +1222,7 @@ class AddAgentScreen(Screen):
         # The *committed* provider choice wins: by the time the connection step is shown, the family
         # has been captured into state, and that is what the connection will actually be created for.
         family = self.state.provider_type or self._radio_value("#provider", self._preset_values)
-        return [p.name for p in oa.providers.list()
-                if not family or p.provider_type == family]
+        return [p.name for p in oa.providers.list() if not family or p.provider_type == family]
 
     def _populate_existing_connections(self) -> None:
         names = self._compatible_connections()
@@ -1143,7 +1250,9 @@ class AddAgentScreen(Screen):
             "base_url": self._input("base_url") or None,
             "region": self._input("region") or None,
             "workspace_id": self._input("workspace_id") or None,
-            "api_key": (self.query_one("#api_key", Input).value or None) if cred == "keychain" else None,
+            "api_key": (self.query_one("#api_key", Input).value or None)
+            if cred == "keychain"
+            else None,
             "key_env": self._input("key_env") or None if cred == "env" else None,
         }
 
@@ -1155,15 +1264,22 @@ class AddAgentScreen(Screen):
         oa = self.app.oa  # type: ignore[attr-defined]
         try:
             result = await oa.providers.test_config(
-                provider_type=p["provider_type"], protocol=p["protocol"], base_url=p["base_url"],
-                region=p["region"], workspace_id=p["workspace_id"],
-                api_key=p["api_key"], key_env=p["key_env"],
+                provider_type=p["provider_type"],
+                protocol=p["protocol"],
+                base_url=p["base_url"],
+                region=p["region"],
+                workspace_id=p["workspace_id"],
+                api_key=p["api_key"],
+                key_env=p["key_env"],
             )
         except Exception as exc:  # noqa: BLE001 - surface any failure as an unhealthy result
             self._status(f"[red]✗ {safe_markup(str(exc), 200)}[/red]")
             return
-        self._status(f"[green]✓ connection ok[/green] — {safe_markup(result.detail, 200)}" if result.ok
-                     else f"[red]✗ {safe_markup(result.detail, 200)}[/red]")
+        self._status(
+            f"[green]✓ connection ok[/green] — {safe_markup(result.detail, 200)}"
+            if result.ok
+            else f"[red]✗ {safe_markup(result.detail, 200)}[/red]"
+        )
 
     # ------------------------------------------------------------------ helpers
 
@@ -1197,6 +1313,7 @@ class AddAgentScreen(Screen):
     def _summary(self, errors: list[str]) -> None:
         # Plain/escaped text: user-provided content must not become Rich markup (part 16).
         from rich.markup import escape
+
         self.query_one("#error-summary", Static).update(
             "[b]Cannot continue:[/b]\n" + "\n".join(f"  • {escape(e)}" for e in errors)
         )
@@ -1255,10 +1372,14 @@ def _provider_detail_text(name: str | None) -> str:
         lines.append(f"Endpoint: {p.openai_base_url}")
     lines.append(f"{where} · {key}")
     if p.catalog_is_mixed:
-        lines.append("Catalog mixes model types — a listing is not a capability claim; probe first.")
+        lines.append(
+            "Catalog mixes model types — a listing is not a capability claim; probe first."
+        )
     else:
-        lines.append("Model discovery: supported (best-effort) · Compatibility: adapter "
-                     "implemented, live-unverified")
+        lines.append(
+            "Model discovery: supported (best-effort) · Compatibility: adapter "
+            "implemented, live-unverified"
+        )
     return "\n".join(lines)
 
 
@@ -1276,8 +1397,7 @@ def _catalog_label(model: RemoteModel) -> str:
 def _probe_line(probe: AgentModelProbe) -> str:
     """Render a probe verdict — only capabilities that were actually observed (§15.2)."""
 
-    mark = {True: "[green]yes[/green]", False: "[red]no[/red]",
-            None: "[yellow]unverified[/yellow]"}
+    mark = {True: "[green]yes[/green]", False: "[red]no[/red]", None: "[yellow]unverified[/yellow]"}
     caps = probe.capabilities
     colour = "green" if probe.agent_compatible else "yellow"
     return (

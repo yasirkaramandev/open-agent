@@ -75,9 +75,13 @@ class AgentService:
             raise AgentError(f"agent {name!r} already exists")
 
         agent = AgentProfile(
-            name=name, title=title, description=description,
+            name=name,
+            title=title,
+            description=description,
             runtime=AgentRuntime(type=runtime_type, provider=provider, model=model, cli=cli),
-            tags=tags or [], system_prompt=system_prompt, permission_profile=permission_profile,
+            tags=tags or [],
+            system_prompt=system_prompt,
+            permission_profile=permission_profile,
             max_steps=max_steps,
         )
         self.repos.agents.upsert(agent)
@@ -133,14 +137,22 @@ class AgentService:
             raise AgentError(f"a provider named {provider_name!r} already exists")
 
         with self.app.providers.create_transaction(
-            name=provider_name, provider_type=provider_type,
+            name=provider_name,
+            provider_type=provider_type,
             protocol=protocol if isinstance(protocol, Protocol) else None,
-            base_url=base_url, anthropic_base_url=anthropic_base_url,
-            api_key=api_key, key_env=key_env, credential_source=credential_source,
-            region=region, workspace_id=workspace_id, extra_headers=extra_headers,
+            base_url=base_url,
+            anthropic_base_url=anthropic_base_url,
+            api_key=api_key,
+            key_env=key_env,
+            credential_source=credential_source,
+            region=region,
+            workspace_id=workspace_id,
+            extra_headers=extra_headers,
         ) as tx:
             agent = self.create(
-                runtime_type=RuntimeType.API_AGENT, provider=provider_name, model=model,
+                runtime_type=RuntimeType.API_AGENT,
+                provider=provider_name,
+                model=model,
                 **agent_fields,  # type: ignore[arg-type]
             )
             tx.commit()  # provider AND agent are durable — forget the previous secret (§6)
@@ -164,10 +176,15 @@ class AgentService:
         if permission_profile is not None:
             get_profile(permission_profile)  # validate
         updates = {
-            k: v for k, v in {
-                "title": title, "description": description, "tags": tags,
-                "system_prompt": system_prompt, "permission_profile": permission_profile,
-            }.items() if v is not None
+            k: v
+            for k, v in {
+                "title": title,
+                "description": description,
+                "tags": tags,
+                "system_prompt": system_prompt,
+                "permission_profile": permission_profile,
+            }.items()
+            if v is not None
         }
         updated = agent.model_copy(update=updates)
         self.repos.agents.upsert(updated)

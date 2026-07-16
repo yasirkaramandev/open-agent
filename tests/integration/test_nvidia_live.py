@@ -36,7 +36,8 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not _KEY, reason="SKIPPED — NVIDIA_API_KEY not available"),
     pytest.mark.skipif(
-        not _OPTED_IN, reason="SKIPPED — live NVIDIA test not opted in (set OPENAGENT_LIVE_NVIDIA=1)"
+        not _OPTED_IN,
+        reason="SKIPPED — live NVIDIA test not opted in (set OPENAGENT_LIVE_NVIDIA=1)",
     ),
 ]
 
@@ -45,7 +46,9 @@ def _adapter() -> OpenAIChatAdapter:
     preset = get_preset("nvidia-build")
     assert preset is not None and preset.openai_base_url
     return OpenAIChatAdapter(
-        base_url=preset.openai_base_url, api_key=_KEY, provider_type="nvidia-build",
+        base_url=preset.openai_base_url,
+        api_key=_KEY,
+        provider_type="nvidia-build",
         compat=get_compat("nvidia-build"),
     )
 

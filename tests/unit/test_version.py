@@ -43,4 +43,6 @@ def test_pyproject_keeps_a_single_version_source() -> None:
     text = _PYPROJECT.read_text(encoding="utf-8")
     assert 'dynamic = ["version"]' in text
     assert re.search(r"(?m)^\[tool\.hatch\.version\]", text)
-    assert not re.search(r'(?m)^version\s*=\s*"', text), "a hardcoded version re-appeared in pyproject"
+    assert not re.search(r'(?m)^version\s*=\s*"', text), (
+        "a hardcoded version re-appeared in pyproject"
+    )

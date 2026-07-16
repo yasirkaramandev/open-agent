@@ -39,10 +39,14 @@ def oa(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> OpenAgentApp:
     (project / "seed.txt").write_text("seed\n")
     _git(["add", "-A"], project)
     _git(["commit", "-q", "-m", "init"], project)
-    app = OpenAgentApp(Paths(
-        data_dir=tmp_path / "data", config_dir=tmp_path / "config",
-        db_path=tmp_path / "data" / "openagent.db", project_root=project,
-    ))
+    app = OpenAgentApp(
+        Paths(
+            data_dir=tmp_path / "data",
+            config_dir=tmp_path / "config",
+            db_path=tmp_path / "data" / "openagent.db",
+            project_root=project,
+        )
+    )
     app.agents.create(name="fake-coder", runtime_type=RuntimeType.CLI, cli="fake")
     install_fake_cli(monkeypatch, FakeCliAdapter(write_fake_script(tmp_path)))
     return app
@@ -58,8 +62,9 @@ async def _run(oa: OpenAgentApp):
 
 
 def _terminals_in_log(oa: OpenAgentApp, run_id: str) -> list[str]:
-    events = [json.loads(line) for line in
-              oa.runs.output(run_id, "events").splitlines() if line.strip()]
+    events = [
+        json.loads(line) for line in oa.runs.output(run_id, "events").splitlines() if line.strip()
+    ]
     return [e["type"] for e in events if e["type"] in _TERMINALS]
 
 
