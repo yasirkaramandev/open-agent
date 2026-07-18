@@ -185,10 +185,18 @@ try {
         $env:Path = $freshPath
         $env:OA_OPENAGENT_BIN = $OpenAgent
         $env:OA_EXPECTED_VERSION = $ExpectedVersion
-        & powershell.exe -NoProfile -Command '$expected=[IO.Path]::GetFullPath($env:OA_OPENAGENT_BIN).TrimEnd("\"); $c=Get-Command openagent -ErrorAction SilentlyContinue; if($null -eq $c -or -not [string]::Equals([IO.Path]::GetFullPath($c.Source).TrimEnd("\"),$expected,[StringComparison]::OrdinalIgnoreCase)){exit 1}; $v=(& openagent version | Out-String).Trim(); if($LASTEXITCODE -ne 0 -or $v -cne ("openagent "+$env:OA_EXPECTED_VERSION)){exit 1}'
-        if ($LASTEXITCODE -ne 0) { throw "fresh PowerShell resolved a different OpenAgent" }
-        $cmdResolved = (& cmd.exe /d /c "where openagent" | Select-Object -First 1).Trim()
-        if ($LASTEXITCODE -ne 0 -or -not (Test-SamePath $cmdResolved $OpenAgent)) {
+        $psResolved = (& powershell.exe -NoProfile -Command '(Get-Command openagent -ErrorAction Stop).Source' | Select-Object -First 1).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not (Test-SamePath $psResolved $OpenAgent)) {
+            throw "fresh PowerShell PATH resolves '$psResolved' instead of '$OpenAgent'"
+        }
+        $psVersion = (& powershell.exe -NoProfile -Command 'openagent version' | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or $psVersion -cne "openagent $ExpectedVersion") {
+            throw "fresh PowerShell did not run the installed OpenAgent version"
+        }
+        $cmdMatches = @(& cmd.exe /d /c "where openagent")
+        $cmdWhereExit = $LASTEXITCODE
+        $cmdResolved = [string]($cmdMatches | Select-Object -First 1)
+        if ($cmdWhereExit -ne 0 -or -not (Test-SamePath $cmdResolved.Trim() $OpenAgent)) {
             throw "fresh CMD PATH resolves a different openagent"
         }
         $cmdVersion = (& cmd.exe /d /c "openagent version" | Out-String).Trim()
