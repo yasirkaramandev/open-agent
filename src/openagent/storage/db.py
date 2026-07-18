@@ -129,6 +129,7 @@ runs = Table(
     Column("turn_owner_pid", Integer),
     Column("turn_owner_create_time", Float),
     Column("turn_started_at", String),
+    Column("turn_previous_status", String),
     Column("data", JSON, nullable=False),
 )
 

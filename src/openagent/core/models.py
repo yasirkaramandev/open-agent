@@ -365,6 +365,16 @@ class Run(BaseModel):
     exit_code: int | None = None
     failure_type: str | None = None
     files_changed: list[str] = Field(default_factory=list)
+    #: Optimistic-concurrency token mirrored from ``runs.state_revision``. Every persisted lifecycle
+    #: or progress update increments it; stale domain objects therefore cannot overwrite newer state.
+    state_revision: int = 0
+    #: Cross-process follow-up-turn lease. These fields are mirrored into the JSON domain payload so
+    #: repository readers never see a different lifecycle from indexed relational columns.
+    active_turn_id: str | None = None
+    turn_owner_pid: int | None = None
+    turn_owner_create_time: float | None = None
+    turn_started_at: str | None = None
+    turn_previous_status: str | None = None
 
 
 class Session(BaseModel):

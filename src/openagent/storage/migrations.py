@@ -491,6 +491,56 @@ def _reconcile_dangling_projects(conn: Connection) -> None:
     )
 
 
+def _m009_run_revision_payload_and_previous_status(conn: Connection) -> None:
+    """Keep indexed run lifecycle columns and the JSON domain payload in lockstep.
+
+    Revision 0008 introduced the relational lease fields, but a claim updated only those columns.
+    ``RunRepository.get`` reconstructed the domain object from ``data`` and could consequently read
+    ``completed`` while SQLite's indexed status was ``running``. Backfill relational state into every
+    JSON payload and add the previous-status evidence needed to diagnose/recover a crashed turn.
+    """
+
+    if not _table_exists(conn, "runs"):
+        return
+    _add_column(conn, "runs", "turn_previous_status", "VARCHAR")
+    rows = conn.exec_driver_sql(
+        "SELECT id, status, state_revision, active_turn_id, turn_owner_pid, "
+        "turn_owner_create_time, turn_started_at, turn_previous_status, data FROM runs"
+    ).fetchall()
+    for (
+        run_id,
+        status,
+        revision,
+        active_turn_id,
+        owner_pid,
+        owner_create_time,
+        turn_started_at,
+        previous_status,
+        raw_data,
+    ) in rows:
+        try:
+            payload = json.loads(raw_data) if isinstance(raw_data, str) else dict(raw_data)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise MigrationVerificationError(
+                f"runs record {str(run_id)[:12]!r} has invalid JSON"
+            ) from exc
+        payload.update(
+            {
+                "status": status,
+                "state_revision": int(revision or 0),
+                "active_turn_id": active_turn_id,
+                "turn_owner_pid": owner_pid,
+                "turn_owner_create_time": owner_create_time,
+                "turn_started_at": turn_started_at,
+                "turn_previous_status": previous_status,
+            }
+        )
+        conn.execute(
+            text("UPDATE runs SET data=:data WHERE id=:run_id"),
+            {"data": json.dumps(payload), "run_id": run_id},
+        )
+
+
 _FORWARD = (
     "Local user data revisions are forward-only; restoration uses the reported online backup."
 )
@@ -525,6 +575,13 @@ MIGRATIONS: list[Migration] = [
         "0007",
         "runs foreign key and turn leases",
         _m008_runs_foreign_key_and_turn_leases,
+        _FORWARD,
+    ),
+    Migration(
+        "0009",
+        "0008",
+        "run revision payload and previous turn status",
+        _m009_run_revision_payload_and_previous_status,
         _FORWARD,
     ),
 ]

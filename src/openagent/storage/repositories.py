@@ -10,6 +10,7 @@ import json
 from collections.abc import Iterator, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, insert, or_, select, update
@@ -301,32 +302,44 @@ class RunRepository:
     def __init__(self, database: Database) -> None:
         self.db = database
 
-    def upsert(self, run: Run) -> None:
-        """Create or update a run without ever deleting its row (spec §9.1).
+    def create_run(self, run: Run) -> None:
+        """Insert a new run. Existing lifecycle rows are never unconditionally overwritten."""
 
-        This used to be ``DELETE`` followed by ``INSERT``. That makes every ordinary status update a
-        row *replacement*, which is a bad shape for a table other rows point at and a worse one under
-        concurrency: between the delete and the insert the run does not exist, and two writers
-        racing can interleave into a lost update or a resurrected stale row.
-
-        The SQLite dialect's ``ON CONFLICT DO UPDATE`` does the whole thing as one statement, so the
-        row keeps its identity and the update is atomic. ``state_revision`` is bumped on every write
-        so :meth:`update_if_unchanged` has something to compare against.
-        """
-
-        values = self._values(run)
+        run.state_revision = 0
+        values = self._values(run, revision=0)
         values["id"] = run.id
         with self.db.engine.begin() as conn:
-            statement = sqlite_insert(t.runs).values(**values, state_revision=0)
-            conn.execute(
+            conn.execute(insert(t.runs).values(**values))
+
+    def upsert(self, run: Run) -> bool:
+        """Compatibility create-or-CAS API; production lifecycle code uses explicit methods.
+
+        Older integrations construct fixtures through ``upsert``. Preserve that surface without the
+        former last-writer-wins update: a missing row is inserted, while an existing row is updated
+        only when ``run.state_revision`` still matches. The method never deletes/re-inserts a row.
+        """
+
+        values = self._values(run, revision=run.state_revision)
+        values["id"] = run.id
+        with self.db.engine.begin() as conn:
+            statement = sqlite_insert(t.runs).values(**values)
+            next_revision = run.state_revision + 1
+            updated = self._values(run, revision=next_revision)
+            result = conn.execute(
                 statement.on_conflict_do_update(
                     index_elements=[t.runs.c.id],
-                    set_={
-                        **values,
-                        "state_revision": t.runs.c.state_revision + 1,
-                    },
+                    set_=updated,
+                    where=t.runs.c.state_revision == run.state_revision,
                 )
             )
+        if result.rowcount == 1:
+            # SQLite reports one row for both an insert and an accepted conflict update. A newly
+            # inserted object remains revision zero; detect the stored token rather than guessing.
+            stored = self.revision_of(run.id)
+            if stored is not None:
+                run.state_revision = stored
+            return True
+        return False
 
     def revision_of(self, run_id: str) -> int | None:
         with self.db.engine.connect() as conn:
@@ -342,17 +355,34 @@ class RunRepository:
         of who actually knew the current state.
         """
 
-        values = self._values(run)
+        return self.update_progress(run, expected_revision=expected_revision)
+
+    def update_progress(self, run: Run, *, expected_revision: int | None = None) -> bool:
+        """Persist non-lifecycle metadata without changing status or accepting a stale revision."""
+
+        expected_revision = run.state_revision if expected_revision is None else expected_revision
+        next_revision = expected_revision + 1
+        values = self._values(run, revision=next_revision)
         with self.db.engine.begin() as conn:
             result = conn.execute(
                 update(t.runs)
-                .where(t.runs.c.id == run.id, t.runs.c.state_revision == expected_revision)
-                .values(**values, state_revision=expected_revision + 1)
+                .where(
+                    t.runs.c.id == run.id,
+                    t.runs.c.status == run.status.value,
+                    t.runs.c.state_revision == expected_revision,
+                )
+                .values(**values)
             )
-        return result.rowcount == 1
+        accepted = result.rowcount == 1
+        if accepted:
+            run.state_revision = next_revision
+        return accepted
 
     @staticmethod
-    def _values(run: Run) -> dict:
+    def _values(run: Run, *, revision: int | None = None) -> dict:
+        effective_revision = run.state_revision if revision is None else revision
+        payload = run.model_dump(mode="json")
+        payload["state_revision"] = effective_revision
         return {
             "agent": run.agent,
             "status": run.status.value,
@@ -381,7 +411,13 @@ class RunRepository:
             "container_runtime": run.container_runtime,
             "container_image": run.container_image,
             "agent_commit_sha": run.agent_commit_sha,
-            "data": run.model_dump(mode="json"),
+            "state_revision": effective_revision,
+            "active_turn_id": run.active_turn_id,
+            "turn_owner_pid": run.turn_owner_pid,
+            "turn_owner_create_time": run.turn_owner_create_time,
+            "turn_started_at": run.turn_started_at,
+            "turn_previous_status": run.turn_previous_status,
+            "data": payload,
         }
 
     def compare_and_set_transition(
@@ -389,23 +425,87 @@ class RunRepository:
         run: Run,
         *,
         expected: set[RunStatus | str],
+        expected_revision: int | None = None,
     ) -> bool:
-        """Atomically persist ``run`` only if its current status is expected and transition-valid."""
+        """Backward-compatible alias for :meth:`transition_run`."""
+
+        return self.transition_run(
+            run,
+            expected_statuses=expected,
+            expected_revision=expected_revision,
+        )
+
+    def transition_run(
+        self,
+        run: Run,
+        *,
+        expected_statuses: set[RunStatus | str],
+        expected_revision: int | None = None,
+    ) -> bool:
+        """CAS a lifecycle transition on both status and revision, incrementing the token."""
 
         from ..core.lifecycle import validate_expected
 
-        validate_expected(expected, run.status)
+        validate_expected(expected_statuses, run.status)
         expected_values = {
             value.value if isinstance(value, RunStatus) else RunStatus(value).value
-            for value in expected
+            for value in expected_statuses
         }
+        expected_revision = run.state_revision if expected_revision is None else expected_revision
+        next_revision = expected_revision + 1
         with self.db.engine.begin() as conn:
             result = conn.execute(
                 update(t.runs)
-                .where(t.runs.c.id == run.id, t.runs.c.status.in_(expected_values))
-                .values(**self._values(run))
+                .where(
+                    t.runs.c.id == run.id,
+                    t.runs.c.status.in_(expected_values),
+                    t.runs.c.state_revision == expected_revision,
+                )
+                .values(**self._values(run, revision=next_revision))
             )
-        return result.rowcount == 1
+        accepted = result.rowcount == 1
+        if accepted:
+            run.state_revision = next_revision
+        return accepted
+
+    def mark_artifact_failure(
+        self,
+        run: Run,
+        *,
+        expected_status: RunStatus | str,
+        expected_revision: int | None = None,
+    ) -> bool:
+        """Correct a reserved terminal outcome when mandatory bundle materialization fails.
+
+        ``completed -> failed`` is not a public lifecycle edge. It is nevertheless required inside
+        terminal reconciliation: the completed state was reserved before the mandatory artifact
+        writes so a CAS loser could not write files, and a failed ``status.json``/``result.json``
+        must invalidate that reservation before any success event is appended.
+        """
+
+        if run.status is not RunStatus.FAILED:
+            raise ValueError("artifact failure correction must target failed")
+        source = (
+            expected_status.value
+            if isinstance(expected_status, RunStatus)
+            else str(expected_status)
+        )
+        expected_revision = run.state_revision if expected_revision is None else expected_revision
+        next_revision = expected_revision + 1
+        with self.db.engine.begin() as conn:
+            result = conn.execute(
+                update(t.runs)
+                .where(
+                    t.runs.c.id == run.id,
+                    t.runs.c.status == source,
+                    t.runs.c.state_revision == expected_revision,
+                )
+                .values(**self._values(run, revision=next_revision))
+            )
+        accepted = result.rowcount == 1
+        if accepted:
+            run.state_revision = next_revision
+        return accepted
 
     # ------------------------------------------------------------------ turn leases (spec §8)
 
@@ -435,41 +535,116 @@ class RunRepository:
         elapsed time cannot distinguish a dead process from a slow model.
         """
 
-        with self.db.engine.begin() as conn:
-            result = conn.execute(
-                update(t.runs)
-                .where(
-                    t.runs.c.id == run_id,
-                    t.runs.c.status.in_(tuple(allowed_statuses)),
-                    t.runs.c.active_turn_id.is_(None),
+        with self.db.engine.connect() as conn:
+            conn.exec_driver_sql("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    select(
+                        t.runs.c.status,
+                        t.runs.c.state_revision,
+                        t.runs.c.active_turn_id,
+                        t.runs.c.data,
+                    ).where(t.runs.c.id == run_id)
+                ).first()
+                if row is None or str(row[0]) not in allowed_statuses or row[2] is not None:
+                    conn.rollback()
+                    return False
+                previous_status = str(row[0])
+                revision = int(row[1])
+                next_revision = revision + 1
+                payload = self._payload(row[3])
+                payload.update(
+                    {
+                        "status": RunStatus.RUNNING.value,
+                        "phase": RunStatus.RUNNING.value,
+                        "state_revision": next_revision,
+                        "active_turn_id": turn_id,
+                        "turn_owner_pid": pid,
+                        "turn_owner_create_time": create_time,
+                        "turn_started_at": started_at,
+                        "turn_previous_status": previous_status,
+                    }
                 )
-                .values(
-                    status=RunStatus.RUNNING.value,
-                    active_turn_id=turn_id,
-                    turn_owner_pid=pid,
-                    turn_owner_create_time=create_time,
-                    turn_started_at=started_at,
-                    state_revision=t.runs.c.state_revision + 1,
+                result = conn.execute(
+                    update(t.runs)
+                    .where(
+                        t.runs.c.id == run_id,
+                        t.runs.c.status == previous_status,
+                        t.runs.c.state_revision == revision,
+                        t.runs.c.active_turn_id.is_(None),
+                    )
+                    .values(
+                        status=RunStatus.RUNNING.value,
+                        active_turn_id=turn_id,
+                        turn_owner_pid=pid,
+                        turn_owner_create_time=create_time,
+                        turn_started_at=started_at,
+                        turn_previous_status=previous_status,
+                        state_revision=next_revision,
+                        data=payload,
+                    )
                 )
-            )
-        return result.rowcount == 1
+                if result.rowcount != 1:
+                    conn.rollback()
+                    return False
+                conn.commit()
+                return True
+            except BaseException:
+                conn.rollback()
+                raise
 
     def release_turn(self, run_id: str, *, turn_id: str) -> bool:
         """Give up a lease this process holds. Only the owner of ``turn_id`` may release it."""
 
-        with self.db.engine.begin() as conn:
-            result = conn.execute(
-                update(t.runs)
-                .where(t.runs.c.id == run_id, t.runs.c.active_turn_id == turn_id)
-                .values(
-                    active_turn_id=None,
-                    turn_owner_pid=None,
-                    turn_owner_create_time=None,
-                    turn_started_at=None,
-                    state_revision=t.runs.c.state_revision + 1,
+        with self.db.engine.connect() as conn:
+            conn.exec_driver_sql("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    select(t.runs.c.state_revision, t.runs.c.data).where(
+                        t.runs.c.id == run_id, t.runs.c.active_turn_id == turn_id
+                    )
+                ).first()
+                if row is None:
+                    conn.rollback()
+                    return False
+                revision = int(row[0])
+                next_revision = revision + 1
+                payload = self._payload(row[1])
+                payload.update(
+                    {
+                        "state_revision": next_revision,
+                        "active_turn_id": None,
+                        "turn_owner_pid": None,
+                        "turn_owner_create_time": None,
+                        "turn_started_at": None,
+                        "turn_previous_status": None,
+                    }
                 )
-            )
-        return result.rowcount == 1
+                result = conn.execute(
+                    update(t.runs)
+                    .where(
+                        t.runs.c.id == run_id,
+                        t.runs.c.active_turn_id == turn_id,
+                        t.runs.c.state_revision == revision,
+                    )
+                    .values(
+                        active_turn_id=None,
+                        turn_owner_pid=None,
+                        turn_owner_create_time=None,
+                        turn_started_at=None,
+                        turn_previous_status=None,
+                        state_revision=next_revision,
+                        data=payload,
+                    )
+                )
+                if result.rowcount != 1:
+                    conn.rollback()
+                    return False
+                conn.commit()
+                return True
+            except BaseException:
+                conn.rollback()
+                raise
 
     def turn_owner(self, run_id: str) -> tuple[str, int, float] | None:
         """``(turn_id, pid, create_time)`` for the current lease, or ``None`` if unleased."""
@@ -487,31 +662,126 @@ class RunRepository:
         return str(row[0]), int(row[1] or 0), float(row[2] or 0.0)
 
     def clear_dead_turn(self, run_id: str, *, turn_id: str) -> bool:
-        """Clear a lease whose owning process is gone.
+        """Orphan and clear a lease whose owning process is known to be gone/reused.
 
         Separated from :meth:`release_turn` so the caller has to have *decided* the owner is dead —
         by checking PID and creation time, not by watching a clock. PID reuse is why the creation
         time matters: the number alone can belong to something else entirely by now.
+
+        A crashed turn is never made resumable automatically: doing so could attach a second backend
+        to a session whose first backend survived the owner. The run is terminalized as orphaned and
+        both relational and JSON state move together, so it cannot remain ``running`` forever.
         """
 
-        with self.db.engine.begin() as conn:
-            result = conn.execute(
-                update(t.runs)
-                .where(t.runs.c.id == run_id, t.runs.c.active_turn_id == turn_id)
-                .values(
-                    active_turn_id=None,
-                    turn_owner_pid=None,
-                    turn_owner_create_time=None,
-                    turn_started_at=None,
-                    state_revision=t.runs.c.state_revision + 1,
+        completed_at = datetime.now(timezone.utc).isoformat()
+        with self.db.engine.connect() as conn:
+            conn.exec_driver_sql("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    select(
+                        t.runs.c.state_revision,
+                        t.runs.c.turn_previous_status,
+                        t.runs.c.data,
+                    ).where(t.runs.c.id == run_id, t.runs.c.active_turn_id == turn_id)
+                ).first()
+                if row is None:
+                    conn.rollback()
+                    return False
+                revision = int(row[0])
+                next_revision = revision + 1
+                previous_status = str(row[1]) if row[1] is not None else None
+                payload = self._payload(row[2])
+                payload.update(
+                    {
+                        "status": RunStatus.ORPHANED.value,
+                        "phase": RunStatus.ORPHANED.value,
+                        "completed_at": completed_at,
+                        "failure_type": "turn_owner_died",
+                        "state_revision": next_revision,
+                        "active_turn_id": None,
+                        "turn_owner_pid": None,
+                        "turn_owner_create_time": None,
+                        "turn_started_at": None,
+                        "turn_previous_status": previous_status,
+                    }
                 )
-            )
-        return result.rowcount == 1
+                result = conn.execute(
+                    update(t.runs)
+                    .where(
+                        t.runs.c.id == run_id,
+                        t.runs.c.active_turn_id == turn_id,
+                        t.runs.c.state_revision == revision,
+                    )
+                    .values(
+                        status=RunStatus.ORPHANED.value,
+                        completed_at=completed_at,
+                        failure_type="turn_owner_died",
+                        active_turn_id=None,
+                        turn_owner_pid=None,
+                        turn_owner_create_time=None,
+                        turn_started_at=None,
+                        state_revision=next_revision,
+                        data=payload,
+                    )
+                )
+                if result.rowcount != 1:
+                    conn.rollback()
+                    return False
+                conn.commit()
+                return True
+            except BaseException:
+                conn.rollback()
+                raise
+
+    @staticmethod
+    def _payload(raw: Any) -> dict[str, Any]:
+        if isinstance(raw, str):
+            value = json.loads(raw)
+        elif isinstance(raw, dict):
+            value = dict(raw)
+        else:
+            value = dict(raw)
+        if not isinstance(value, dict):
+            raise ValueError("run data payload is not an object")
+        return value
+
+    @staticmethod
+    def _read_columns() -> tuple:
+        return (
+            t.runs.c.data,
+            t.runs.c.status,
+            t.runs.c.state_revision,
+            t.runs.c.active_turn_id,
+            t.runs.c.turn_owner_pid,
+            t.runs.c.turn_owner_create_time,
+            t.runs.c.turn_started_at,
+            t.runs.c.turn_previous_status,
+            t.runs.c.failure_type,
+            t.runs.c.completed_at,
+        )
+
+    @classmethod
+    def _from_row(cls, row: Sequence[Any]) -> Run:
+        payload = cls._payload(row[0])
+        payload.update(
+            {
+                "status": row[1],
+                "state_revision": int(row[2] or 0),
+                "active_turn_id": row[3],
+                "turn_owner_pid": row[4],
+                "turn_owner_create_time": row[5],
+                "turn_started_at": row[6],
+                "turn_previous_status": row[7],
+                "failure_type": row[8],
+                "completed_at": row[9],
+            }
+        )
+        return Run.model_validate(payload)
 
     def get(self, run_id: str) -> Run | None:
         with self.db.engine.connect() as conn:
-            row = conn.execute(select(t.runs.c.data).where(t.runs.c.id == run_id)).first()
-        return Run.model_validate(row[0]) if row else None
+            row = conn.execute(select(*self._read_columns()).where(t.runs.c.id == run_id)).first()
+        return self._from_row(row) if row else None
 
     def list(
         self, limit: int = 50, *, project_id: str | None = None, all_projects: bool = False
@@ -523,14 +793,14 @@ class RunRepository:
         they predate scoping and hiding them would look like data loss.
         """
 
-        query = select(t.runs.c.data).order_by(t.runs.c.started_at.desc())
+        query = select(*self._read_columns()).order_by(t.runs.c.started_at.desc())
         if not all_projects and project_id is not None:
             query = query.where(
                 or_(t.runs.c.project_id == project_id, t.runs.c.project_id.is_(None))
             )
         with self.db.engine.connect() as conn:
             rows = conn.execute(query.limit(limit)).all()
-        return [Run.model_validate(r[0]) for r in rows]
+        return [self._from_row(row) for row in rows]
 
     def list_active(
         self, *, project_id: str | None = None, all_projects: bool = False
@@ -549,14 +819,14 @@ class RunRepository:
         """
 
         active = ("queued", "starting", "running", "waiting_approval")
-        query = select(t.runs.c.data).where(t.runs.c.status.in_(active))
+        query = select(*self._read_columns()).where(t.runs.c.status.in_(active))
         if not all_projects and project_id is not None:
             query = query.where(
                 or_(t.runs.c.project_id == project_id, t.runs.c.project_id.is_(None))
             )
         with self.db.engine.connect() as conn:
             rows = conn.execute(query).all()
-        return [Run.model_validate(r[0]) for r in rows]
+        return [self._from_row(row) for row in rows]
 
 
 class SessionRepository:
