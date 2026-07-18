@@ -120,6 +120,15 @@ runs = Table(
     Column("container_runtime", String),
     Column("container_image", String),
     Column("agent_commit_sha", String),
+    # Turn ownership (spec §8, §9). ``state_revision`` is the optimistic-concurrency token: a
+    # lifecycle update only lands if the row still carries the revision the writer read, so a stale
+    # in-memory Run cannot overwrite a newer status. The lease columns record which process owns the
+    # in-flight turn, with create_time guarding against PID reuse.
+    Column("state_revision", Integer, nullable=False, default=0, server_default="0"),
+    Column("active_turn_id", String),
+    Column("turn_owner_pid", Integer),
+    Column("turn_owner_create_time", Float),
+    Column("turn_started_at", String),
     Column("data", JSON, nullable=False),
 )
 

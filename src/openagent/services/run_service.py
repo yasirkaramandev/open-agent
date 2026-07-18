@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
@@ -52,6 +53,7 @@ from ..security.process import (
     PID_ALIVE,
     TerminationOutcome,
     TerminationResult,
+    capture_process_identity,
     process_identity_status,
     terminate_pid_tree,
 )
@@ -920,14 +922,66 @@ class RunService:
         if not run.provider_session_id:
             raise RunError("no session id recorded for this run")
 
+        # §8 The process-local lock above is a fast, well-worded rejection for the common case, but
+        # it is invisible to a second *process* — and OpenAgent is explicitly multi-process (a TUI in
+        # one terminal, a CLI in another, one global database). The durable claim is a single
+        # conditional UPDATE, so the database, not this process, decides who owns the turn.
+        turn_id = f"turn_{uuid.uuid4().hex[:16]}"
+        identity = capture_process_identity(os.getpid())
+        claimed = self.repos.runs.claim_turn(
+            run.id,
+            turn_id=turn_id,
+            pid=os.getpid(),
+            create_time=identity.create_time if identity else 0.0,
+            started_at=_now().isoformat(),
+        )
+        if not claimed:
+            self._reclaim_if_owner_is_dead(run.id)
+            claimed = self.repos.runs.claim_turn(
+                run.id,
+                turn_id=turn_id,
+                pid=os.getpid(),
+                create_time=identity.create_time if identity else 0.0,
+                started_at=_now().isoformat(),
+            )
+        if not claimed:
+            raise RunError("a turn is already running for this run")
+
         try:
             async with lock:
-                return await self._resume_locked(run, agent, prompt, on_event)
+                # Re-read: the claim moved the row to running and bumped its revision, so the
+                # in-memory copy from before the claim is already stale.
+                current = self.repos.runs.get(run.id) or run
+                return await self._resume_locked(current, agent, prompt, on_event)
         finally:
+            with contextlib.suppress(Exception):
+                self.repos.runs.release_turn(run.id, turn_id=turn_id)
             # Locks are per in-flight turn, not permanent run state. Keeping one for every run made
             # a long-lived TUI/service grow without bound and retained stale event-loop objects.
             if not lock.locked():
                 self._resume_locks.pop(run.id, None)
+
+    def _reclaim_if_owner_is_dead(self, run_id: str) -> None:
+        """Drop a lease whose owning process no longer exists.
+
+        Deliberately not a timeout: elapsed time cannot tell a crashed owner from a model that is
+        simply taking a long time, and stealing a live owner's turn is the failure mode worth
+        avoiding. The creation time is checked alongside the PID because the number on its own can
+        belong to an unrelated process by now.
+        """
+
+        owner = self.repos.runs.turn_owner(run_id)
+        if owner is None:
+            return
+        turn_id, pid, create_time = owner
+        if pid <= 0 or pid == os.getpid():
+            return
+        identity = ProcessIdentity(
+            pid=pid, create_time=create_time, executable="", command_identity=""
+        )
+        if process_identity_status(identity) == PID_ALIVE:
+            return  # a live owner keeps its turn, however long it takes
+        self.repos.runs.clear_dead_turn(run_id, turn_id=turn_id)
 
     async def _resume_locked(
         self, run: Run, agent: AgentProfile, prompt: str, on_event: EventHook | None

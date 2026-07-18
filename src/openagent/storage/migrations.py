@@ -305,6 +305,192 @@ def _m007_authoritative_event_store(conn: Connection) -> None:
     )
 
 
+#: The ``runs`` table as v0.1.4 wants it: every column, the real project foreign key, and the turn
+#: lease columns. Written once and used by the rebuild so there is a single description of "correct".
+_RUNS_TARGET_DDL = """
+CREATE TABLE runs_new (
+    id VARCHAR NOT NULL,
+    agent VARCHAR NOT NULL,
+    status VARCHAR NOT NULL,
+    workspace VARCHAR NOT NULL,
+    worktree VARCHAR,
+    provider_session_id VARCHAR,
+    started_at VARCHAR NOT NULL,
+    completed_at VARCHAR,
+    exit_code INTEGER,
+    failure_type VARCHAR,
+    project_id VARCHAR REFERENCES projects (id),
+    project_root VARCHAR,
+    project_state_dir VARCHAR,
+    artifact_dir VARCHAR,
+    pid INTEGER,
+    process_create_time FLOAT,
+    process_executable VARCHAR,
+    command_identity VARCHAR,
+    execution_backend VARCHAR NOT NULL DEFAULT 'host-restricted',
+    container_runtime VARCHAR,
+    container_image VARCHAR,
+    agent_commit_sha VARCHAR,
+    state_revision INTEGER NOT NULL DEFAULT 0,
+    active_turn_id VARCHAR,
+    turn_owner_pid INTEGER,
+    turn_owner_create_time FLOAT,
+    turn_started_at VARCHAR,
+    data JSON NOT NULL,
+    PRIMARY KEY (id)
+)
+"""
+
+#: Columns copied across the rebuild, named explicitly. ``SELECT *`` would silently reorder or drop
+#: a column the day either schema changes, which is exactly the failure this migration exists to fix.
+_RUNS_CARRIED_COLUMNS = (
+    "id",
+    "agent",
+    "status",
+    "workspace",
+    "worktree",
+    "provider_session_id",
+    "started_at",
+    "completed_at",
+    "exit_code",
+    "failure_type",
+    "project_id",
+    "project_root",
+    "project_state_dir",
+    "artifact_dir",
+    "pid",
+    "process_create_time",
+    "process_executable",
+    "command_identity",
+    "execution_backend",
+    "container_runtime",
+    "container_image",
+    "agent_commit_sha",
+    "data",
+)
+
+
+def _m008_runs_foreign_key_and_turn_leases(conn: Connection) -> None:
+    """Rebuild ``runs`` so upgraded databases match fresh ones, and add the turn lease columns.
+
+    Two problems, one table rebuild.
+
+    **Schema parity (§10.2).** A fresh install builds ``runs`` from the SQLAlchemy metadata, which
+    declares ``project_id REFERENCES projects(id)``. An upgraded install got that column from
+    ``ALTER TABLE runs ADD COLUMN`` in revision 0002 — and SQLite's ``ALTER TABLE`` cannot attach a
+    foreign key. So the same OpenAgent version enforced referential integrity on one machine and not
+    on another, depending only on when the user installed it. The only way to add a constraint to an
+    existing SQLite table is to rebuild it, which is what this does, following SQLite's documented
+    generalized ALTER TABLE procedure.
+
+    **Turn leases (§8).** Resume was guarded by an ``asyncio.Lock``, which is invisible to a second
+    process. Two terminals could resume the same run at once. The lease columns added here are what
+    make the claim a single atomic UPDATE that only one process can win.
+
+    ``PRAGMA foreign_keys`` cannot be toggled inside a transaction and the migration runner holds
+    one, so the copy happens with enforcement live. That is why dangling references are reconciled
+    *first*: a legacy row pointing at a project that was never recorded would otherwise abort the
+    whole upgrade.
+    """
+
+    if not _table_exists(conn, "runs"):
+        return
+    if _column_exists(conn, "runs", "state_revision") and _has_project_foreign_key(conn):
+        return  # already rebuilt (a fresh database created from current metadata)
+
+    _reconcile_dangling_projects(conn)
+
+    before_count = int(conn.exec_driver_sql("SELECT COUNT(*) FROM runs").scalar() or 0)
+    before_ids = {row[0] for row in conn.exec_driver_sql("SELECT id FROM runs")}
+
+    # Only copy columns the *old* table actually has; the rest take their declared defaults.
+    present = [column for column in _RUNS_CARRIED_COLUMNS if _column_exists(conn, "runs", column)]
+    columns = ", ".join(present)
+
+    conn.exec_driver_sql("DROP TABLE IF EXISTS runs_new")
+    conn.exec_driver_sql(_RUNS_TARGET_DDL)
+    conn.exec_driver_sql(f"INSERT INTO runs_new ({columns}) SELECT {columns} FROM runs")
+
+    after_count = int(conn.exec_driver_sql("SELECT COUNT(*) FROM runs_new").scalar() or 0)
+    after_ids = {row[0] for row in conn.exec_driver_sql("SELECT id FROM runs_new")}
+    if after_count != before_count or after_ids != before_ids:
+        # Never swap in a table that lost a row. The transaction rolls back and the backup stands.
+        raise MigrationVerificationError(
+            f"runs rebuild would lose data: {before_count} rows before, {after_count} after; "
+            f"{len(before_ids - after_ids)} id(s) missing"
+        )
+
+    conn.exec_driver_sql("DROP TABLE runs")
+    conn.exec_driver_sql("ALTER TABLE runs_new RENAME TO runs")
+    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_runs_project_id ON runs (project_id)")
+    # Defensive: revision 0007 creates `events` with raw DDL that omits this index, so a database
+    # that reached 0007 without one would silently lack it.
+    if _table_exists(conn, "events"):
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_events_run_id ON events (run_id)")
+
+
+def _has_project_foreign_key(conn: Connection) -> bool:
+    for row in conn.exec_driver_sql("PRAGMA foreign_key_list(runs)"):
+        if str(row[2]) == "projects" and str(row[3]) == "project_id":
+            return True
+    return False
+
+
+def _reconcile_dangling_projects(conn: Connection) -> None:
+    """Make every ``runs.project_id`` satisfiable before the foreign key starts being enforced.
+
+    A run whose project was never recorded keeps its scoping where that is possible: the project row
+    is recreated from ``project_root``. Where even that is unknown the reference is cleared rather
+    than the run being dropped — ``project_id IS NULL`` is already treated as a legacy row
+    everywhere, so the run stays visible instead of vanishing to satisfy a constraint.
+    """
+
+    if not _table_exists(conn, "projects"):
+        return
+    now = "1970-01-01T00:00:00+00:00"
+    dangling = conn.exec_driver_sql(
+        "SELECT r.id, r.project_id, r.project_root FROM runs r "
+        "LEFT JOIN projects p ON p.id = r.project_id "
+        "WHERE r.project_id IS NOT NULL AND p.id IS NULL"
+    ).fetchall()
+    for _run_id, project_id, project_root in dangling:
+        if project_root:
+            payload = json.dumps(
+                {
+                    "id": project_id,
+                    "root": project_root,
+                    "state": "missing" if not Path(project_root).exists() else "active",
+                    "marker_version": 0,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+            conn.execute(
+                text(
+                    "INSERT OR IGNORE INTO projects "
+                    "(id, root, state, marker_version, created_at, updated_at, data) "
+                    "VALUES (:id, :root, :state, 0, :now, :now, :data)"
+                ),
+                {
+                    "id": project_id,
+                    "root": project_root,
+                    "state": "missing" if not Path(project_root).exists() else "active",
+                    "now": now,
+                    "data": payload,
+                },
+            )
+        else:
+            conn.execute(
+                text("UPDATE runs SET project_id = NULL WHERE project_id = :pid"),
+                {"pid": project_id},
+            )
+    # A project row may still be missing if its root collided with an existing one.
+    conn.exec_driver_sql(
+        "UPDATE runs SET project_id = NULL WHERE project_id IS NOT NULL AND project_id NOT IN "
+        "(SELECT id FROM projects)"
+    )
+
+
 _FORWARD = (
     "Local user data revisions are forward-only; restoration uses the reported online backup."
 )
@@ -332,6 +518,13 @@ MIGRATIONS: list[Migration] = [
         "0006",
         "authoritative event body store",
         _m007_authoritative_event_store,
+        _FORWARD,
+    ),
+    Migration(
+        "0008",
+        "0007",
+        "runs foreign key and turn leases",
+        _m008_runs_foreign_key_and_turn_leases,
         _FORWARD,
     ),
 ]

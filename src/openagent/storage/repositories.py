@@ -13,6 +13,7 @@ from pathlib import Path
 
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, insert, or_, select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from ..core.events import EventType, NormalizedEvent
 from ..core.limits import RUNTIME_LIMITS
@@ -301,43 +302,54 @@ class RunRepository:
         self.db = database
 
     def upsert(self, run: Run) -> None:
+        """Create or update a run without ever deleting its row (spec §9.1).
+
+        This used to be ``DELETE`` followed by ``INSERT``. That makes every ordinary status update a
+        row *replacement*, which is a bad shape for a table other rows point at and a worse one under
+        concurrency: between the delete and the insert the run does not exist, and two writers
+        racing can interleave into a lost update or a resurrected stale row.
+
+        The SQLite dialect's ``ON CONFLICT DO UPDATE`` does the whole thing as one statement, so the
+        row keeps its identity and the update is atomic. ``state_revision`` is bumped on every write
+        so :meth:`update_if_unchanged` has something to compare against.
+        """
+
+        values = self._values(run)
+        values["id"] = run.id
         with self.db.engine.begin() as conn:
-            conn.execute(sa_delete(t.runs).where(t.runs.c.id == run.id))
+            statement = sqlite_insert(t.runs).values(**values, state_revision=0)
             conn.execute(
-                insert(t.runs).values(
-                    id=run.id,
-                    agent=run.agent,
-                    status=run.status.value,
-                    workspace=run.workspace,
-                    worktree=run.worktree,
-                    provider_session_id=run.provider_session_id,
-                    started_at=run.started_at.isoformat(),
-                    completed_at=run.completed_at.isoformat() if run.completed_at else None,
-                    exit_code=run.exit_code,
-                    failure_type=run.failure_type,
-                    project_id=run.project_id,
-                    project_root=run.project_root,
-                    project_state_dir=run.project_state_dir,
-                    artifact_dir=run.artifact_dir,
-                    pid=run.process_identity.pid if run.process_identity else run.pid,
-                    process_create_time=(
-                        run.process_identity.create_time
-                        if run.process_identity
-                        else run.pid_started_at
-                    ),
-                    process_executable=(
-                        run.process_identity.executable if run.process_identity else None
-                    ),
-                    command_identity=(
-                        run.process_identity.command_identity if run.process_identity else None
-                    ),
-                    execution_backend=run.execution_backend,
-                    container_runtime=run.container_runtime,
-                    container_image=run.container_image,
-                    agent_commit_sha=run.agent_commit_sha,
-                    data=run.model_dump(mode="json"),
+                statement.on_conflict_do_update(
+                    index_elements=[t.runs.c.id],
+                    set_={
+                        **values,
+                        "state_revision": t.runs.c.state_revision + 1,
+                    },
                 )
             )
+
+    def revision_of(self, run_id: str) -> int | None:
+        with self.db.engine.connect() as conn:
+            row = conn.execute(select(t.runs.c.state_revision).where(t.runs.c.id == run_id)).first()
+        return int(row[0]) if row else None
+
+    def update_if_unchanged(self, run: Run, *, expected_revision: int) -> bool:
+        """Persist ``run`` only if nobody else has written it since ``expected_revision``.
+
+        Optimistic concurrency for the non-lifecycle updates (progress, metadata, session ids). A
+        long-lived in-memory ``Run`` that was read before another process finished the run would
+        otherwise happily write "running" back over "cancelled" — the last writer winning regardless
+        of who actually knew the current state.
+        """
+
+        values = self._values(run)
+        with self.db.engine.begin() as conn:
+            result = conn.execute(
+                update(t.runs)
+                .where(t.runs.c.id == run.id, t.runs.c.state_revision == expected_revision)
+                .values(**values, state_revision=expected_revision + 1)
+            )
+        return result.rowcount == 1
 
     @staticmethod
     def _values(run: Run) -> dict:
@@ -392,6 +404,107 @@ class RunRepository:
                 update(t.runs)
                 .where(t.runs.c.id == run.id, t.runs.c.status.in_(expected_values))
                 .values(**self._values(run))
+            )
+        return result.rowcount == 1
+
+    # ------------------------------------------------------------------ turn leases (spec §8)
+
+    def claim_turn(
+        self,
+        run_id: str,
+        *,
+        turn_id: str,
+        pid: int,
+        create_time: float,
+        started_at: str,
+        allowed_statuses: Sequence[str] = ("completed", "failed"),
+    ) -> bool:
+        """Atomically take ownership of the next turn for ``run_id``. One winner, in the database.
+
+        Resume used to be guarded by an ``asyncio.Lock``, which protects one event loop in one
+        process and nothing else. Two terminals, or a TUI and a CLI, could each pass that check and
+        both start a backend for the same run — duplicate turn numbers, interleaved event sequences,
+        two terminal events.
+
+        The claim is a single conditional UPDATE, so the database decides the winner: only a row
+        whose status is resumable *and* whose ``active_turn_id`` is still NULL can be claimed, and
+        SQLite serialises the two statements. The loser sees ``rowcount == 0`` and is told a turn is
+        already running.
+
+        A crashed owner is handled by :meth:`steal_dead_turn` rather than by a timeout, because
+        elapsed time cannot distinguish a dead process from a slow model.
+        """
+
+        with self.db.engine.begin() as conn:
+            result = conn.execute(
+                update(t.runs)
+                .where(
+                    t.runs.c.id == run_id,
+                    t.runs.c.status.in_(tuple(allowed_statuses)),
+                    t.runs.c.active_turn_id.is_(None),
+                )
+                .values(
+                    status=RunStatus.RUNNING.value,
+                    active_turn_id=turn_id,
+                    turn_owner_pid=pid,
+                    turn_owner_create_time=create_time,
+                    turn_started_at=started_at,
+                    state_revision=t.runs.c.state_revision + 1,
+                )
+            )
+        return result.rowcount == 1
+
+    def release_turn(self, run_id: str, *, turn_id: str) -> bool:
+        """Give up a lease this process holds. Only the owner of ``turn_id`` may release it."""
+
+        with self.db.engine.begin() as conn:
+            result = conn.execute(
+                update(t.runs)
+                .where(t.runs.c.id == run_id, t.runs.c.active_turn_id == turn_id)
+                .values(
+                    active_turn_id=None,
+                    turn_owner_pid=None,
+                    turn_owner_create_time=None,
+                    turn_started_at=None,
+                    state_revision=t.runs.c.state_revision + 1,
+                )
+            )
+        return result.rowcount == 1
+
+    def turn_owner(self, run_id: str) -> tuple[str, int, float] | None:
+        """``(turn_id, pid, create_time)`` for the current lease, or ``None`` if unleased."""
+
+        with self.db.engine.connect() as conn:
+            row = conn.execute(
+                select(
+                    t.runs.c.active_turn_id,
+                    t.runs.c.turn_owner_pid,
+                    t.runs.c.turn_owner_create_time,
+                ).where(t.runs.c.id == run_id)
+            ).first()
+        if not row or row[0] is None:
+            return None
+        return str(row[0]), int(row[1] or 0), float(row[2] or 0.0)
+
+    def clear_dead_turn(self, run_id: str, *, turn_id: str) -> bool:
+        """Clear a lease whose owning process is gone.
+
+        Separated from :meth:`release_turn` so the caller has to have *decided* the owner is dead —
+        by checking PID and creation time, not by watching a clock. PID reuse is why the creation
+        time matters: the number alone can belong to something else entirely by now.
+        """
+
+        with self.db.engine.begin() as conn:
+            result = conn.execute(
+                update(t.runs)
+                .where(t.runs.c.id == run_id, t.runs.c.active_turn_id == turn_id)
+                .values(
+                    active_turn_id=None,
+                    turn_owner_pid=None,
+                    turn_owner_create_time=None,
+                    turn_started_at=None,
+                    state_revision=t.runs.c.state_revision + 1,
+                )
             )
         return result.rowcount == 1
 
