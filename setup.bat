@@ -31,7 +31,10 @@ if not exist "%REPO_ROOT%\src\openagent" (
 )
 set "OA_VERSION_SOURCE=%REPO_ROOT%\src\openagent\__init__.py"
 set "EXPECTED_VERSION="
-for /f "delims=" %%v in ('powershell -NoProfile -Command "$t=Get-Content -LiteralPath $env:OA_VERSION_SOURCE -Raw; $m=[regex]::Match($t,'(?m)^__version__\s*=\s*[\"'']([^\"'']+)[\"'']\s*$'); if(-not $m.Success){exit 1}; $m.Groups[1].Value"') do if not defined EXPECTED_VERSION set "EXPECTED_VERSION=%%v"
+set "EXPECTED_VERSION_FILE=%TEMP%\openagent-source-version-%RANDOM%-%RANDOM%.txt"
+powershell -NoProfile -Command "$t=Get-Content -LiteralPath $env:OA_VERSION_SOURCE -Raw; $m=[regex]::Match($t,'(?m)^__version__\s*=\s*[\"'']([^\"'']+)[\"'']\s*$'); if(-not $m.Success){exit 1}; $m.Groups[1].Value" >"!EXPECTED_VERSION_FILE!"
+if not errorlevel 1 set /p EXPECTED_VERSION=<"!EXPECTED_VERSION_FILE!"
+del /q "!EXPECTED_VERSION_FILE!" >nul 2>&1
 if not defined EXPECTED_VERSION (
     call :die "locate-repo" "could not read the source OpenAgent version" "Restore src\openagent\__init__.py from the official repository."
     goto :eof

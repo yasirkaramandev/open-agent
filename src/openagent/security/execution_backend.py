@@ -3,18 +3,26 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import shutil
 import stat
 import subprocess
+import tarfile
 import tempfile
+import time
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Protocol
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import BinaryIO, Protocol
 
 from ..core.cancellation import RunCancellation
-from .filesystem import SafeWorkspaceWalker, UnsafeWorkspacePath
+from .filesystem import (
+    SafeWorkspaceWalker,
+    UnsafeWorkspacePath,
+    WalkerLimits,
+    WorkspaceBudgetExceeded,
+)
 from .process import minimal_environment, run_capture
 
 HOST_RESTRICTED = "host-restricted"
@@ -135,6 +143,29 @@ class ContainerSandboxBackend:
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise ExecutionBackendError(f"{self.runtime} control command failed: {exc}") from exc
 
+    def _archive_control(
+        self,
+        args: list[str],
+        *,
+        stdin: BinaryIO | None = None,
+        stdout: int | BinaryIO = subprocess.PIPE,
+        timeout: int = 30,
+    ) -> subprocess.CompletedProcess[bytes]:
+        """Run a binary container control command for bounded tar transport."""
+
+        try:
+            return subprocess.run(  # noqa: S603 - fixed runtime argv, never a shell
+                [self.runtime, *args],
+                stdin=stdin,
+                stdout=stdout,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=timeout,
+                env=minimal_environment(),
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ExecutionBackendError(f"{self.runtime} archive command failed: {exc}") from exc
+
     def validate(self) -> None:
         if self._validated:
             return
@@ -156,8 +187,7 @@ class ContainerSandboxBackend:
                 "no-new-privileges",
                 "--user",
                 "65532:65532",
-                "--pid",
-                "private",
+                "--pid=",
                 "--ipc",
                 "private",
                 "--pull",
@@ -165,14 +195,54 @@ class ContainerSandboxBackend:
                 self.image,
                 "/bin/sh",
                 "-c",
-                "exit 0",
+                "command -v tar >/dev/null 2>&1",
             ]
         )
         if shell.returncode != 0:
+            detail = _bounded_detail(shell.stderr or shell.stdout)
+            suffix = f": {detail}" if detail else ""
             raise ExecutionBackendError(
-                f"container image {self.image!r} must provide a Linux-compatible /bin/sh"
+                f"container image {self.image!r} must provide a Linux-compatible /bin/sh and tar"
+                f"{suffix}"
             )
         self._validated = True
+
+    def _import_workspace(self, container: str, source: Path) -> None:
+        with tempfile.TemporaryFile() as archive:
+            _write_workspace_archive(source, archive)
+            archive.seek(0)
+            result = self._archive_control(
+                [
+                    "exec",
+                    "-i",
+                    container,
+                    "/bin/sh",
+                    "-c",
+                    "tar -xf - -C /workspace",
+                ],
+                stdin=archive,
+            )
+        if result.returncode != 0:
+            raise ExecutionBackendError(_binary_detail(result.stderr, "workspace import failed"))
+
+    def _export_workspace(self, container: str, output: Path) -> None:
+        with tempfile.TemporaryFile() as archive:
+            result = self._archive_control(
+                [
+                    "exec",
+                    container,
+                    "/bin/sh",
+                    "-c",
+                    "tar -cf - -C /workspace .",
+                ],
+                stdout=archive,
+            )
+            if result.returncode != 0:
+                raise ExecutionBackendError(
+                    _binary_detail(result.stderr, "workspace export failed")
+                )
+            archive.seek(0)
+            _extract_workspace_archive(archive, output)
 
     def execute(
         self,
@@ -204,7 +274,6 @@ class ContainerSandboxBackend:
                 path.relative_to(source): _snapshot(path)
                 for path in SafeWorkspaceWalker(source).iter_files()
             }
-            _make_container_copy_writable(source)
 
             create = self._control(
                 [
@@ -220,8 +289,7 @@ class ContainerSandboxBackend:
                     "no-new-privileges",
                     "--user",
                     "65532:65532",
-                    "--pid",
-                    "private",
+                    "--pid=",
                     "--ipc",
                     "private",
                     "--pull",
@@ -252,9 +320,7 @@ class ContainerSandboxBackend:
                 start = self._control(["start", container])
                 if start.returncode != 0:
                     raise ExecutionBackendError(start.stderr.strip() or "container start failed")
-                copied = self._control(["cp", f"{source}/.", f"{container}:/workspace/"])
-                if copied.returncode != 0:
-                    raise ExecutionBackendError(copied.stderr.strip() or "workspace copy failed")
+                self._import_workspace(container, source)
                 exec_argv = [self.runtime, "exec", "--workdir", "/workspace"]
                 for key, value in env.items():
                     exec_argv.extend(["--env", f"{key}={value}"])
@@ -267,11 +333,7 @@ class ContainerSandboxBackend:
                     max_output_bytes=max_output_bytes,
                     cancellation=cancellation,
                 )
-                exported = self._control(["cp", f"{container}:/workspace/.", str(output)])
-                if exported.returncode != 0:
-                    raise ExecutionBackendError(
-                        exported.stderr.strip() or "workspace export failed"
-                    )
+                self._export_workspace(container, output)
                 self._sync_back(output, original)
                 return subprocess.CompletedProcess(
                     list(argv), result.returncode, result.stdout, result.stderr
@@ -339,19 +401,109 @@ def _snapshot(path: Path) -> _FileSnapshot:
     return _FileSnapshot(digest=digest, executable=bool(info.st_mode & 0o111))
 
 
-def _make_container_copy_writable(root: Path) -> None:
-    """Permit the fixed non-root container user to edit the isolated tmpfs snapshot.
+def _write_workspace_archive(root: Path, archive: BinaryIO) -> None:
+    """Serialize safe regular files for extraction by the fixed non-root container user."""
 
-    The temporary root itself is mode 0700, so widening children does not expose source content to
-    other host users. Docker/Podman copy preserves these bits while assigning container ownership.
-    """
+    walker = SafeWorkspaceWalker(root)
+    with tarfile.open(fileobj=archive, mode="w") as bundle:
+        for path in walker.iter_files():
+            relative = path.relative_to(root)
+            data = walker.read_bytes(relative)
+            info = path.lstat()
+            member = tarfile.TarInfo(relative.as_posix())
+            member.size = len(data)
+            member.mode = 0o777 if info.st_mode & 0o111 else 0o666
+            member.uid = 65532
+            member.gid = 65532
+            member.mtime = 0
+            bundle.addfile(member, fileobj=io.BytesIO(data))
 
-    for path in sorted(root.rglob("*")):
-        info = path.lstat()
-        if stat.S_ISDIR(info.st_mode):
-            path.chmod(0o777)
-        elif stat.S_ISREG(info.st_mode):
-            path.chmod(0o777 if info.st_mode & 0o111 else 0o666)
+
+def _extract_workspace_archive(
+    archive: BinaryIO,
+    output: Path,
+    *,
+    limits: WalkerLimits | None = None,
+) -> None:
+    """Extract only bounded regular files from an untrusted container tar stream."""
+
+    active_limits = limits or WalkerLimits()
+    walker = SafeWorkspaceWalker(output, limits=active_limits)
+    seen: set[Path] = set()
+    directories = 0
+    files = 0
+    total_bytes = 0
+    deadline = time.monotonic() + active_limits.deadline_seconds
+    try:
+        with tarfile.open(fileobj=archive, mode="r:") as bundle:
+            for member in bundle:
+                if time.monotonic() >= deadline:
+                    raise ExecutionBackendError("workspace archive deadline exceeded")
+                relative = _safe_archive_relative(member.name)
+                if relative is None:
+                    if member.isdir():
+                        continue
+                    raise ExecutionBackendError("workspace archive contains an invalid root entry")
+                if relative in seen:
+                    raise ExecutionBackendError(
+                        f"workspace archive contains duplicate path {relative.as_posix()!r}"
+                    )
+                seen.add(relative)
+                if member.isdir():
+                    directories += 1
+                    if directories > active_limits.directories:
+                        raise ExecutionBackendError("workspace archive directory budget exceeded")
+                    continue
+                if not member.isfile():
+                    raise ExecutionBackendError(
+                        f"workspace archive contains unsafe entry {member.name!r}"
+                    )
+                files += 1
+                total_bytes += member.size
+                if files > active_limits.files or files > active_limits.results:
+                    raise ExecutionBackendError("workspace archive file budget exceeded")
+                if member.size < 0 or total_bytes > active_limits.bytes:
+                    raise ExecutionBackendError("workspace archive byte budget exceeded")
+                source = bundle.extractfile(member)
+                if source is None:
+                    raise ExecutionBackendError(
+                        f"workspace archive file {member.name!r} could not be read"
+                    )
+                data = source.read(member.size + 1)
+                if len(data) != member.size:
+                    raise ExecutionBackendError(
+                        f"workspace archive file {member.name!r} has an invalid size"
+                    )
+                mode = 0o700 if member.mode & 0o111 else 0o600
+                walker.write_bytes(relative, data, mode=mode)
+    except (tarfile.TarError, OSError, UnsafeWorkspacePath, WorkspaceBudgetExceeded) as exc:
+        raise ExecutionBackendError(f"unsafe workspace archive: {exc}") from exc
+
+
+def _safe_archive_relative(raw: str) -> Path | None:
+    if not raw or "\\" in raw or "\x00" in raw:
+        raise ExecutionBackendError(f"workspace archive contains unsafe path {raw!r}")
+    posix = PurePosixPath(raw)
+    windows = PureWindowsPath(raw)
+    if posix.is_absolute() or windows.is_absolute() or windows.drive or windows.root:
+        raise ExecutionBackendError(f"workspace archive contains unsafe path {raw!r}")
+    if any(part == ".." for part in (*posix.parts, *windows.parts)):
+        raise ExecutionBackendError(f"workspace archive contains unsafe path {raw!r}")
+    parts = tuple(part for part in posix.parts if part != ".")
+    if not parts:
+        return None
+    return Path(*parts)
+
+
+def _bounded_detail(value: str, *, limit: int = 2_000) -> str:
+    cleaned = value.strip()
+    return cleaned[-limit:]
+
+
+def _binary_detail(value: bytes | None, fallback: str) -> str:
+    if not value:
+        return fallback
+    return _bounded_detail(value.decode("utf-8", errors="replace")) or fallback
 
 
 def build_execution_backend(

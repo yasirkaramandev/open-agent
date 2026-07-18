@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import subprocess
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,8 @@ from openagent.core.cancellation import RunCancelled
 from openagent.security.execution_backend import (
     ContainerSandboxBackend,
     ExecutionBackendError,
+    _extract_workspace_archive,
+    _write_workspace_archive,
     detect_container_runtime,
 )
 from openagent.services.run_service import RunError
@@ -71,11 +75,11 @@ def test_validation_uses_read_only_no_network_shell_probe(
     assert "--read-only" in probe
     assert ["--cap-drop", "ALL"] == probe[probe.index("--cap-drop") : probe.index("--cap-drop") + 2]
     assert ["--user", "65532:65532"] == probe[probe.index("--user") : probe.index("--user") + 2]
-    assert ["--pid", "private"] == probe[probe.index("--pid") : probe.index("--pid") + 2]
+    assert "--pid=" in probe
     assert ["--ipc", "private"] == probe[probe.index("--ipc") : probe.index("--ipc") + 2]
     assert ["--pull", "never"] == probe[probe.index("--pull") : probe.index("--pull") + 2]
     assert not any("unconfined" in value for value in probe)
-    assert probe[-3:] == ["/bin/sh", "-c", "exit 0"]
+    assert probe[-3:] == ["/bin/sh", "-c", "command -v tar >/dev/null 2>&1"]
 
 
 def test_container_execution_uses_tmpfs_and_hard_resource_limits_without_host_mount(
@@ -93,13 +97,16 @@ def test_container_execution_uses_tmpfs_and_hard_resource_limits_without_host_mo
 
     def control(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess[str]:
         calls.append(args)
-        if args[0] == "cp" and args[1].endswith(":/workspace/."):
-            exported = Path(args[2])
-            (exported / "input.txt").write_text("input")
-            (exported / "result.txt").write_text("result")
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr(backend, "_control", control)
+    monkeypatch.setattr(backend, "_import_workspace", lambda *_args: None)
+
+    def export_workspace(_container: str, exported: Path) -> None:
+        (exported / "input.txt").write_text("input")
+        (exported / "result.txt").write_text("result")
+
+    monkeypatch.setattr(backend, "_export_workspace", export_workspace)
     monkeypatch.setattr(
         "openagent.security.execution_backend.run_capture",
         lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "ok", ""),
@@ -128,7 +135,7 @@ def test_container_execution_uses_tmpfs_and_hard_resource_limits_without_host_mo
         create.index("--security-opt") : create.index("--security-opt") + 2
     ]
     assert ["--user", "65532:65532"] == create[create.index("--user") : create.index("--user") + 2]
-    assert ["--pid", "private"] == create[create.index("--pid") : create.index("--pid") + 2]
+    assert "--pid=" in create
     assert ["--ipc", "private"] == create[create.index("--ipc") : create.index("--ipc") + 2]
     assert ["--pull", "never"] == create[create.index("--pull") : create.index("--pull") + 2]
     assert not any("unconfined" in value for value in create)
@@ -143,6 +150,7 @@ def test_container_execution_uses_tmpfs_and_hard_resource_limits_without_host_mo
     assert "/workspace:rw,size=1g,mode=0700,uid=65532,gid=65532" in create
     assert "/tmp:rw,size=256m,mode=1777" in create
     assert not {"--mount", "--volume", "-v"}.intersection(create)
+    assert not any(args[0] == "cp" for args in calls)
     assert (workspace / "result.txt").read_text() == "result"
 
 
@@ -173,6 +181,12 @@ def test_container_timeout_and_cancel_always_force_cleanup(
         raise failure
 
     monkeypatch.setattr(backend, "_control", control)
+    monkeypatch.setattr(backend, "_import_workspace", lambda *_args: None)
+    monkeypatch.setattr(
+        backend,
+        "_export_workspace",
+        lambda *_args: pytest.fail("workspace export must not run after timeout/cancellation"),
+    )
     monkeypatch.setattr("openagent.security.execution_backend.run_capture", fail_capture)
 
     with pytest.raises(type(failure)):
@@ -203,14 +217,17 @@ def test_sync_back_refuses_concurrent_host_change_before_writing_anything(
 
     def control(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess[str]:
         calls.append(args)
-        if args[0] == "cp" and args[1].endswith(":/workspace/."):
-            output = Path(args[2])
-            (output / "input.txt").write_text("container edit")
-            (output / "result.txt").write_text("new file")
-            (workspace / "input.txt").write_text("concurrent human edit")
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr(backend, "_control", control)
+    monkeypatch.setattr(backend, "_import_workspace", lambda *_args: None)
+
+    def export_workspace(_container: str, output: Path) -> None:
+        (output / "input.txt").write_text("container edit")
+        (output / "result.txt").write_text("new file")
+        (workspace / "input.txt").write_text("concurrent human edit")
+
+    monkeypatch.setattr(backend, "_export_workspace", export_workspace)
     monkeypatch.setattr(
         "openagent.security.execution_backend.run_capture",
         lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "ok", ""),
@@ -229,6 +246,54 @@ def test_sync_back_refuses_concurrent_host_change_before_writing_anything(
     assert (workspace / "input.txt").read_text() == "concurrent human edit"
     assert not (workspace / "result.txt").exists()
     assert calls[-1][0:2] == ["rm", "--force"]
+
+
+def test_workspace_archive_round_trip_preserves_regular_files(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    source.mkdir()
+    output.mkdir()
+    (source / "nested").mkdir()
+    (source / "nested" / "data.txt").write_bytes(b"safe payload\n")
+    archive = io.BytesIO()
+
+    _write_workspace_archive(source, archive)
+    archive.seek(0)
+    _extract_workspace_archive(archive, output)
+
+    assert (output / "nested" / "data.txt").read_bytes() == b"safe payload\n"
+
+
+@pytest.mark.parametrize("name", ["../escape.txt", "/absolute.txt", "C:/escape.txt"])
+def test_workspace_archive_rejects_path_escape(tmp_path: Path, name: str) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w") as bundle:
+        member = tarfile.TarInfo(name)
+        member.size = 1
+        bundle.addfile(member, io.BytesIO(b"x"))
+    archive.seek(0)
+
+    with pytest.raises(ExecutionBackendError, match="unsafe path"):
+        _extract_workspace_archive(archive, output)
+
+    assert list(output.rglob("*")) == []
+
+
+def test_workspace_archive_rejects_links(tmp_path: Path) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w") as bundle:
+        member = tarfile.TarInfo("link")
+        member.type = tarfile.SYMTYPE
+        member.linkname = "../escape"
+        bundle.addfile(member)
+    archive.seek(0)
+
+    with pytest.raises(ExecutionBackendError, match="unsafe entry"):
+        _extract_workspace_archive(archive, output)
 
 
 def test_cli_run_never_silently_falls_back_from_container_to_host(paths) -> None:

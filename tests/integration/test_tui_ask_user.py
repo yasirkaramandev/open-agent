@@ -250,4 +250,12 @@ async def test_cancel_button_cancels_an_api_run_mid_stream(oa, adapter):
         run = await _wait_terminal(pilot, oa, run_id)
         assert run.status.value == "cancelled"
 
+        # The DB transition reserves the terminal outcome before artifacts and the authoritative
+        # event are flushed. Keep the test app alive until its worker completes that bundle.
+        for _ in range(100):
+            await pilot.pause(0.05)
+            if app.live_run(run_id).finished:
+                break
+        assert app.live_run(run_id).finished, "the run worker never stopped"
+
     assert _terminal_events(oa, run_id) == ["run.cancelled"]

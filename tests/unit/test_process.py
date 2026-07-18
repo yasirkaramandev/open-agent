@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import time
 
 import psutil
 import pytest
@@ -10,11 +11,13 @@ from openagent.security.process import (
     PID_GONE,
     PID_REUSED,
     PID_UNKNOWN,
+    OutputLimitExceeded,
     TerminationOutcome,
     capture_process_identity,
     is_pid_alive,
     minimal_environment,
     process_identity_status,
+    run_capture,
     run_process_status,
     terminate_pid_tree,
     terminate_process_tree,
@@ -32,6 +35,44 @@ def test_minimal_env_excludes_api_keys(monkeypatch):
 def test_minimal_env_injects_extra():
     env = minimal_environment({"CODEX_API_KEY": "sk-run-scoped"})
     assert env["CODEX_API_KEY"] == "sk-run-scoped"
+
+
+def test_run_capture_accepts_a_child_that_exits_before_identity_sample(tmp_path, monkeypatch):
+    """An already-reaped child cannot be a PID-reuse signalling risk."""
+
+    def miss_after_exit(_pid):
+        time.sleep(0.1)
+        return None
+
+    monkeypatch.setattr("openagent.security.process.capture_process_identity", miss_after_exit)
+
+    result = run_capture(
+        [sys.executable, "-c", "print('quick success')"],
+        cwd=tmp_path,
+        env=minimal_environment(),
+        timeout=5,
+        max_output_bytes=1024,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "quick success\n"
+
+
+def test_identity_race_does_not_bypass_output_limit(tmp_path, monkeypatch):
+    def miss_after_exit(_pid):
+        time.sleep(0.1)
+        return None
+
+    monkeypatch.setattr("openagent.security.process.capture_process_identity", miss_after_exit)
+
+    with pytest.raises(OutputLimitExceeded):
+        run_capture(
+            [sys.executable, "-c", "print('x' * 2048)"],
+            cwd=tmp_path,
+            env=minimal_environment(),
+            timeout=5,
+            max_output_bytes=32,
+        )
 
 
 # --------------------------------------------------------------------------- PID identity (item 11)

@@ -141,6 +141,12 @@ class ManagedProcess:
         )
         self._identity = capture_process_identity(self._proc.pid)
         if self._identity is None:
+            # A tiny command can exit successfully before psutil takes its first sample. Yield once
+            # so asyncio's child watcher can publish that return code. An already-gone process no
+            # longer needs a kill identity; its pipes and status still belong to this Process.
+            await asyncio.sleep(0)
+            if self._proc.returncode is not None:
+                return
             # We cannot safely manage a process whose identity we failed to capture. Stop it while
             # we still own the asyncio handle and fail startup instead of leaving an unkillable run.
             self._proc.terminate()
@@ -634,7 +640,10 @@ def run_capture(
         start_new_session=not IS_WINDOWS,
     )
     identity = capture_process_identity(popen.pid)
-    if identity is None:
+    if identity is None and popen.poll() is None:
+        # Fail closed only while the unidentified process is still alive. Very short commands can
+        # exit before psutil's first sample; once ``poll`` has reaped that exact child there is
+        # nothing left to signal, and its bounded pipes remain safe to collect through ``popen``.
         popen.terminate()
         with contextlib.suppress(subprocess.TimeoutExpired):
             popen.wait(timeout=5.0)
@@ -644,7 +653,11 @@ def run_capture(
         try:
             raw_out, raw_err = popen.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            terminate_process_tree(identity)
+            if identity is not None:
+                terminate_process_tree(identity)
+            else:  # defensive: identity-less implies the child was already reaped above
+                with contextlib.suppress(ProcessLookupError):
+                    popen.kill()
             try:
                 popen.communicate(timeout=5.0)
             except subprocess.TimeoutExpired:  # pragma: no cover - defensive
@@ -674,7 +687,7 @@ def _decode(raw: bytes | None) -> str:
 def _read_bounded(
     popen: subprocess.Popen,
     *,
-    identity: ProcessIdentity,
+    identity: ProcessIdentity | None,
     timeout: float,
     limit: int,
     cancellation: RunCancellation | None = None,
@@ -744,7 +757,11 @@ def _read_bounded(
         time.sleep(0.02)
 
     if breached.is_set() or timed_out or cancelled:
-        terminate_process_tree(identity)
+        if identity is not None:
+            terminate_process_tree(identity)
+        elif popen.poll() is None:  # defensive; the caller rejects this state before reading
+            with contextlib.suppress(ProcessLookupError):
+                popen.kill()
     for thread in threads:
         thread.join(timeout=2.0)
     with contextlib.suppress(subprocess.TimeoutExpired):

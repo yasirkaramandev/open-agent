@@ -24,8 +24,7 @@ def atomic_write_bytes(path: Path, data: bytes, *, mode: int = 0o600) -> None:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-            with contextlib.suppress(OSError):
-                os.fchmod(handle.fileno(), mode)
+            _fchmod(handle.fileno(), mode)
         os.replace(temp_path, path)
         with contextlib.suppress(OSError):
             os.chmod(path, mode)
@@ -64,8 +63,7 @@ def atomic_write_lines(path: Path, lines: Iterable[str], *, mode: int = 0o600) -
                 handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-            with contextlib.suppress(OSError):
-                os.fchmod(handle.fileno(), mode)
+            _fchmod(handle.fileno(), mode)
         os.replace(temp_path, path)
         with contextlib.suppress(OSError):
             os.chmod(path, mode)
@@ -78,8 +76,21 @@ def atomic_write_lines(path: Path, lines: Iterable[str], *, mode: int = 0o600) -
 
 def _fsync_directory(directory: Path) -> None:
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    fd = os.open(directory, flags)
     try:
-        os.fsync(fd)
+        fd = os.open(directory, flags)
+    except OSError:
+        return
+    try:
+        with contextlib.suppress(OSError):
+            os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def _fchmod(fd: int, mode: int) -> None:
+    """Apply descriptor permissions where the platform exposes ``os.fchmod``."""
+
+    fchmod = getattr(os, "fchmod", None)
+    if fchmod is not None:
+        with contextlib.suppress(OSError):
+            fchmod(fd, mode)
