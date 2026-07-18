@@ -1383,30 +1383,21 @@ class RunService:
         """
 
         previous = run.status
-        run.status = RunStatus.CANCELLED
-        run.phase = RunPhase.CANCELLED.value
-        run.completed_at = _now()
-        run.failure_type = failure_type
-        if not self.repos.runs.compare_and_set_transition(run, expected={previous}):
-            return False
-
         run_dir = self.run_dir_for(run)
-        if run_dir.exists():
-            if failure_type == "orphaned_process_terminated_by_user":
-                self._record_orphan_terminated(run)
-            with contextlib.suppress(OSError):
-                EventLog(run_dir, index=self.repos.event_index).append(
-                    NormalizedEvent(
-                        run_id=run.id,
-                        type=EventType.RUN_CANCELLED,
-                        source="openagent",
-                        data={"reason": reason},
-                    )
-                )
-        if run_dir.exists():
-            with contextlib.suppress(OSError):
-                ArtifactWriter(run_dir).write_status(run)
-        return True
+        # The termination audit note is written first so ``run.cancelled`` stays the final semantic
+        # event (item 1).
+        if run_dir.exists() and failure_type == "orphaned_process_terminated_by_user":
+            self._record_orphan_terminated(run)
+        # One reconciliation for the row, the terminal event and the whole bundle. This path used to
+        # refresh status.json alone, leaving result.json / output.md / timeline.md / integrity.json
+        # describing a run that was still going (§7.1).
+        return self.reconcile_terminal_bundle(
+            run,
+            target_status=RunStatus.CANCELLED,
+            expected={previous},
+            failure_type=failure_type,
+            reason=reason,
+        )
 
     def _record_orphan_terminated(self, run: Run) -> None:
         """Audit that the orphaned live process *was* terminated by the user (mirror of the note the
@@ -1468,19 +1459,152 @@ class RunService:
             status = process_identity_status(run.process_identity)
             record_live = status == PID_ALIVE
             if status == PID_ALIVE:
-                run.failure_type = run.failure_type or "orphaned_unattached_process"
+                failure_type = run.failure_type or "orphaned_unattached_process"
             else:
-                run.failure_type = run.failure_type or f"orphaned_pid_{status}"
+                failure_type = run.failure_type or f"orphaned_pid_{status}"
             previous = run.status
-            run.status = RunStatus.ORPHANED
-            run.completed_at = _now()
-            if self.repos.runs.compare_and_set_transition(run, expected={previous}):
-                if record_live:
-                    self._record_orphan_event(run, status)
+            # The audit note goes first so the terminal event stays the last semantic entry (item 1).
+            if record_live:
+                self._record_orphan_event(run, status, failure_type)
+            # One reconciliation for the row, the terminal event and the whole artifact bundle.
+            # Recovery used to update only the row and leave status.json/result.json saying
+            # "running", which is how a run could report two different outcomes at once (§7.1).
+            if self.reconcile_terminal_bundle(
+                run,
+                target_status=RunStatus.ORPHANED,
+                expected={previous},
+                failure_type=failure_type,
+                terminal_data={"pid": run.pid, "pid_status": status, "killed": False}
+                if record_live
+                else {"pid_status": status},
+            ):
                 recovered.append(run.id)
         return recovered
 
-    def _record_orphan_event(self, run: Run, status: str) -> None:
+    def reconcile_terminal_bundle(
+        self,
+        run: Run,
+        *,
+        target_status: RunStatus,
+        expected: set[RunStatus | str] | None = None,
+        failure_type: str | None = None,
+        reason: str = "",
+        terminal_data: dict[str, Any] | None = None,
+        artifact_failure: dict | None = None,
+    ) -> bool:
+        """Move ``run`` to a terminal state and make **every** record of it agree (spec §7.2).
+
+        A run's outcome is written in three places that different readers consult: the SQLite row,
+        the event log, and the artifact bundle. Before v0.1.4 only the mainline completion path
+        updated all three — orphan recovery updated the row and wrote a ``log`` note, and
+        cross-process cancel updated the row, wrote ``run.cancelled`` and refreshed ``status.json``
+        alone. A recovered run could therefore say ``orphaned`` in the database, ``running`` in
+        ``result.json``, and nothing at all in the event log, and which answer you got depended on
+        which file you opened.
+
+        Every terminal route now comes through here — normal completion and failure keep their own
+        richer path, but cancellation (in-process and cross-process), orphan recovery, resume
+        outcomes and artifact-write recovery all land here — so there is one implementation to keep
+        correct rather than five to keep in step.
+
+        Returns ``False`` when the compare-and-set loses, meaning another actor reached a terminal
+        state first; the caller must not then write anything of its own.
+
+        Idempotent: a run that already carries a terminal event is reconciled (its bundle is
+        refreshed) without a second terminal event being appended.
+        """
+
+        previous = run.status
+        run.status = target_status
+        run.phase = (
+            target_status.value if target_status.value in _PHASE_VALUES else RunPhase.FAILED.value
+        )
+        run.completed_at = run.completed_at or _now()
+        if failure_type is not None:
+            run.failure_type = failure_type
+        if target_status is RunStatus.COMPLETED:
+            run.failure_type = None
+
+        expected_from: set[RunStatus | str] = expected if expected is not None else {previous}
+        if not self.repos.runs.compare_and_set_transition(run, expected=expected_from):
+            return False
+
+        run_dir = self.run_dir_for(run)
+        if not run_dir.exists():
+            return True
+
+        event_log = EventLog(run_dir, index=self.repos.event_index, run_id=run.id)
+
+        # Rebuild the cumulative bundle from the log, so the artifacts describe what actually
+        # happened rather than being blanked by a recovery path that had no in-memory state.
+        try:
+            art, _state = self._rebuild_artifacts(run)
+        except Exception:  # noqa: BLE001 - an unreadable log must not block reconciliation
+            art = RunArtifacts()
+        try:
+            projection: RunProjection | None = self.projection(run.id)
+        except Exception:  # noqa: BLE001
+            projection = None
+
+        # At most one terminal event *of each kind* (item 1). Reconciling the same outcome twice —
+        # orphan recovery running again on a restart — must not append a duplicate. But a run that
+        # was orphaned and is then explicitly cancelled by the user has genuinely changed state, and
+        # refusing to record run.cancelled there would leave the log ending on an audit note while
+        # the database said "cancelled".
+        event_type = terminal_event_type(target_status)
+        already_recorded = self.repos.event_index.has_event_type(run.id, event_type.value)
+        terminal_event: NormalizedEvent | None = None
+        if not already_recorded:
+            data: dict[str, Any] = {"status": enum_value(target_status)}
+            if run.failure_type:
+                data["error_type"] = run.failure_type
+            if reason:
+                data["reason"] = reason
+            if terminal_data:
+                data.update(terminal_data)
+            terminal_event = NormalizedEvent(
+                run_id=run.id,
+                type=event_type,
+                source="openagent",
+                data=data,
+            )
+            if projection is not None:
+                projection.apply(terminal_event)
+
+        # Artifacts first, terminal event last: a failed artifact write is then caught *before* the
+        # log claims the run is over, so result.json can never be missing while the log says done
+        # (item 9.4). Each write is individually suppressed — recording an outcome must not raise.
+        partial = artifact_failure is not None
+        writer = ArtifactWriter(run_dir)
+        steps: list[Callable[[], Any]] = [
+            lambda: writer.write_status(
+                run, artifacts_partial=partial, artifact_failure=artifact_failure
+            ),
+            lambda: writer.write_results(
+                run,
+                art,
+                projection,
+                artifacts_partial=partial,
+                artifact_failure=artifact_failure,
+            ),
+        ]
+        if projection is not None:
+            steps.append(lambda: writer.write_timeline(run, projection))
+        for step in steps:
+            with contextlib.suppress(Exception):
+                step()
+
+        if terminal_event is not None:
+            with contextlib.suppress(Exception):
+                event_log.append(terminal_event)
+        with contextlib.suppress(Exception):
+            event_log.flush()
+        # The manifest is written last so it covers the bundle as finally shipped.
+        with contextlib.suppress(Exception):
+            writer.write_integrity(run)
+        return True
+
+    def _record_orphan_event(self, run: Run, status: str, failure_type: str = "") -> None:
         """Write an audit event for an orphaned run whose process is still alive (item 9.5).
 
         Records the live PID and a safe, actionable summary — and states plainly that the process was
@@ -1592,11 +1716,24 @@ def _is_redundant_phase(event: NormalizedEvent, run: Run) -> bool:
     return str(event.data.get("phase") or "") == run.phase
 
 
-def _terminal_event_type(status: RunStatus) -> EventType:
+def terminal_event_type(status: RunStatus) -> EventType:
+    """The event that records reaching ``status``.
+
+    ``ORPHANED`` maps to its own event rather than to ``run.failed`` (spec §7.3). The run did not
+    fail — OpenAgent lost track of it, possibly while its backend process is still running — and the
+    two need different recovery, different resume rules and different words in the UI. Folding them
+    together erased a distinction the rest of the system depends on.
+    """
+
     return {
         RunStatus.COMPLETED: EventType.RUN_COMPLETED,
         RunStatus.CANCELLED: EventType.RUN_CANCELLED,
+        RunStatus.ORPHANED: EventType.RUN_ORPHANED,
     }.get(status, EventType.RUN_FAILED)
+
+
+#: Backwards-compatible alias for the private name this used to have.
+_terminal_event_type = terminal_event_type
 
 
 _TERMINAL_EVENT_TYPES = frozenset(
@@ -1604,6 +1741,7 @@ _TERMINAL_EVENT_TYPES = frozenset(
         EventType.RUN_COMPLETED.value,
         EventType.RUN_FAILED.value,
         EventType.RUN_CANCELLED.value,
+        EventType.RUN_ORPHANED.value,
     }
 )
 
@@ -1619,6 +1757,7 @@ def _status_of_terminal(event: NormalizedEvent) -> RunStatus | None:
         EventType.RUN_COMPLETED.value: RunStatus.COMPLETED,
         EventType.RUN_FAILED.value: RunStatus.FAILED,
         EventType.RUN_CANCELLED.value: RunStatus.CANCELLED,
+        EventType.RUN_ORPHANED.value: RunStatus.ORPHANED,
     }.get(etype)
 
 

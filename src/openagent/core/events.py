@@ -113,6 +113,8 @@ class RunPhase(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    #: The owning process vanished; see EventType.RUN_ORPHANED.
+    ORPHANED = "orphaned"
 
 
 #: Event types that describe one addressable item (projected by ``(source, item_id)``).

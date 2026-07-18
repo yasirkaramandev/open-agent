@@ -354,6 +354,7 @@ class RunProjection:
             EventType.RUN_COMPLETED.value: RunPhase.COMPLETED.value,
             EventType.RUN_FAILED.value: RunPhase.FAILED.value,
             EventType.RUN_CANCELLED.value: RunPhase.CANCELLED.value,
+            EventType.RUN_ORPHANED.value: RunPhase.ORPHANED.value,
         }
         self.phase = self.status = mapping[etype]
         self.completed_at = event.timestamp
@@ -481,6 +482,7 @@ _RUN_LEVEL: dict[str, Any] = {
     EventType.RUN_COMPLETED.value: RunProjection._on_terminal,
     EventType.RUN_FAILED.value: RunProjection._on_terminal,
     EventType.RUN_CANCELLED.value: RunProjection._on_terminal,
+    EventType.RUN_ORPHANED.value: RunProjection._on_terminal,
 }
 
 _ITEM_KIND: dict[str, str] = {

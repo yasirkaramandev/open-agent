@@ -885,6 +885,8 @@ def _print_event(event: NormalizedEvent) -> None:
         "test.completed": f"[magenta]tests[/magenta] {'passed' if data.get('passed') else 'failed'}",
         "run.completed": "[green]● completed[/green]",
         "run.failed": f"[red]● failed[/red] {message}",
+        "run.cancelled": "[yellow]● cancelled[/yellow]",
+        "run.orphaned": "[yellow]● orphaned[/yellow] — OpenAgent lost track of this run",
     }
     line = icons.get(etype)
     if line:

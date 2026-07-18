@@ -593,7 +593,7 @@ class EventIndexRepository:
         return [event.model_dump(mode="json") for event in self.read(run_id)]
 
     def terminal_count(self, run_id: str) -> int:
-        terminals = ("run.completed", "run.failed", "run.cancelled")
+        terminals = ("run.completed", "run.failed", "run.cancelled", "run.orphaned")
         with self.db.engine.connect() as conn:
             row = conn.execute(
                 select(func.count())
@@ -601,6 +601,23 @@ class EventIndexRepository:
                 .where(t.events.c.run_id == run_id, t.events.c.type.in_(terminals))
             ).first()
         return int(row[0]) if row else 0
+
+    def has_event_type(self, run_id: str, event_type: str) -> bool:
+        """Whether this run already recorded an event of exactly ``event_type``.
+
+        Used to make terminal reconciliation idempotent without flattening genuinely distinct
+        transitions: re-running orphan recovery must not append a second ``run.orphaned``, but a
+        user who then cancels that orphaned run *has* changed its state, and ``run.cancelled`` must
+        be recorded.
+        """
+
+        with self.db.engine.connect() as conn:
+            row = conn.execute(
+                select(func.count())
+                .select_from(t.events)
+                .where(t.events.c.run_id == run_id, t.events.c.type == event_type)
+            ).first()
+        return bool(row and int(row[0]))
 
     def count(self, run_id: str) -> int:
         with self.db.engine.connect() as conn:

@@ -246,7 +246,12 @@ class DoctorService:
             if len(sequences) != len(set(sequences)):
                 issues.append(f"{run.id}: duplicate sequence")
             terminals = self.app.repos.event_index.terminal_count(run.id)
-            terminal_status = run.status.value in {"completed", "failed", "cancelled"}
+            terminal_status = run.status.value in {
+                "completed",
+                "failed",
+                "cancelled",
+                "orphaned",
+            }
             if terminals > 1 or (terminal_status and terminals != 1):
                 issues.append(f"{run.id}: terminal count {terminals}")
             path = self.app.runs.run_dir_for(run) / "events.jsonl"
