@@ -155,8 +155,13 @@ try {
         }
         $backupPath = $null
         foreach ($check in @($doctor.checks)) {
-            if ($null -ne $check.data -and $check.data.backup_path) {
-                $backupPath = [string]$check.data.backup_path
+            # Doctor check payloads are heterogeneous. Under StrictMode, reading an absent dynamic
+            # JSON property throws instead of yielding $null, so inspect the property bag first.
+            $dataProperty = $check.PSObject.Properties["data"]
+            if ($null -eq $dataProperty -or $null -eq $dataProperty.Value) { continue }
+            $backupProperty = $dataProperty.Value.PSObject.Properties["backup_path"]
+            if ($null -ne $backupProperty -and $backupProperty.Value) {
+                $backupPath = [string]$backupProperty.Value
                 break
             }
         }
