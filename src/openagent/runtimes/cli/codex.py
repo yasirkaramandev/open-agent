@@ -66,6 +66,7 @@ from ...security.process import (
 from .base import (
     AuthStatus,
     CliCapabilities,
+    CliModelDiscoveryContext,
     CliRunRequest,
     StreamOutcome,
     run_managed_cli,
@@ -181,7 +182,7 @@ class CodexAdapter:
 
     model_discovery_method = "codex app-server model/list"
 
-    async def list_models(self) -> list[str]:
+    async def list_models(self, context: CliModelDiscoveryContext | None = None) -> list[str]:
         if not self.executable:
             raise RuntimeError("codex is not installed")
         install = await self.detect()

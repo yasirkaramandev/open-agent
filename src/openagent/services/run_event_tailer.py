@@ -86,15 +86,25 @@ class RunEventTailer:
         self._stopped = False
         self._last_page_row_count = 0
 
-    async def initial_replay(self) -> list[NormalizedEvent]:
-        """Replay all current rows once with keyset pagination, then remember the DB version."""
+    async def initial_replay(self) -> int:
+        """Replay all current rows once with keyset pagination; returns how many were delivered.
 
-        replayed: list[NormalizedEvent] = []
+        Returns a **count**, not the events. Each page is already handed to the consumer by
+        ``_deliver`` as it is read, so also accumulating every event into a list held the entire
+        history a second time, in memory, for the duration of the replay — on a 50k-event run that
+        is the whole event set duplicated for no reader. The one production caller
+        (``run_console.py``) discards the return value entirely; only tests looked at it, and they
+        already assert against what was delivered.
+
+        Paging itself is unchanged: memory stays bounded by ``batch_size``.
+        """
+
+        replayed = 0
         while not self._stop.is_set():
             batch = await self._read_one_page()
             if not batch:
                 break
-            replayed.extend(batch)
+            replayed += len(batch)
             await self._deliver(batch)
             if self._last_page_row_count < self.batch_size:
                 break

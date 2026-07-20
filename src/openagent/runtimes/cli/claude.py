@@ -29,6 +29,7 @@ from ...security.process import (
 from .base import (
     AuthStatus,
     CliCapabilities,
+    CliModelDiscoveryContext,
     CliRunRequest,
     run_managed_cli,
 )
@@ -119,8 +120,34 @@ class ClaudeAdapter:
 
     model_discovery_method = "aliases + account settings"
 
-    async def list_models(self) -> list[str]:
-        result = await asyncio.to_thread(discover_claude_models)
+    async def list_models(self, context: CliModelDiscoveryContext | None = None) -> list[str]:
+        """Enumerate models for *this* project and *this* credential.
+
+        The previous implementation called ``discover_claude_models()`` with no arguments, despite
+        that function already supporting ``project_root``, ``env``, ``api_key`` and ``base_url``.
+        Everything project- or credential-scoped was therefore discarded: a repository whose
+        ``.claude/settings.json`` pins ``availableModels`` showed the generic alias list instead,
+        and a user on a gateway got the public catalogue.
+
+        With no context supplied the behavior is unchanged, so callers that genuinely have no
+        project (a bare `openagent cli models`) still work.
+        """
+
+        context = context or CliModelDiscoveryContext()
+        plan = build_child_environment("claude")
+        environment = context.environment or plan.as_child_env()
+        api_key = (
+            environment.get("ANTHROPIC_API_KEY")
+            or environment.get("ANTHROPIC_AUTH_TOKEN")
+            or environment.get("CLAUDE_CODE_OAUTH_TOKEN")
+        )
+        result = await asyncio.to_thread(
+            discover_claude_models,
+            project_root=context.project_root,
+            env=environment,
+            api_key=api_key,
+            base_url=context.base_url or environment.get("ANTHROPIC_BASE_URL"),
+        )
         self.last_model_discovery = result
         return result.models
 

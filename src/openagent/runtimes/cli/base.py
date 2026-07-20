@@ -79,6 +79,32 @@ class AuthStatus:
 
 
 @dataclass
+class CliModelDiscoveryContext:
+    """Everything a CLI needs to enumerate the models *this* user can actually reach.
+
+    Model availability is not a property of the CLI — it is a property of the CLI plus the project
+    it is pointed at plus the credential in play. ``ClaudeAdapter.list_models`` used to call
+    ``discover_claude_models()`` with no arguments at all, even though that function already
+    accepted ``project_root``, ``env``, ``api_key`` and ``base_url``. The result was a list of
+    documented aliases with the project's own ``.claude/settings.json`` — including its
+    ``availableModels`` policy list — silently ignored.
+
+    All fields are optional so an adapter with no per-context behavior can ignore the whole thing.
+    """
+
+    project_root: Path | None = None
+    executable: str | None = None
+    #: The environment the CLI would run under, including any credential. Excluded from ``repr``:
+    #: this carries real API keys.
+    environment: dict[str, str] = field(default_factory=dict, repr=False)
+    #: ``CliCredentialSource.value``, for reporting which credential the answer is scoped to.
+    credential_source: str = "none"
+    base_url: str | None = None
+    #: Skip any cached result and re-query.
+    refresh: bool = False
+
+
+@dataclass
 class CliCapabilities:
     structured_events: bool
     resumable: bool
@@ -103,7 +129,7 @@ class CliAdapter(Protocol):
         self, *, dry_run: bool = False, active_run_ids: Sequence[str] = ()
     ) -> Any: ...
 
-    async def list_models(self) -> list[str]: ...
+    async def list_models(self, context: CliModelDiscoveryContext | None = None) -> list[str]: ...
 
     async def inspect_auth(self) -> AuthStatus: ...
 

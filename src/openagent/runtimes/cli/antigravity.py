@@ -57,6 +57,7 @@ from ...security.process import (
 from .base import (
     AuthStatus,
     CliCapabilities,
+    CliModelDiscoveryContext,
     CliRunRequest,
     run_managed_cli,
 )
@@ -206,7 +207,7 @@ class AntigravityAdapter:
     #: is the one first-class CLI that can enumerate models offline.
     model_discovery_method = "agy models"
 
-    async def list_models(self) -> list[str]:
+    async def list_models(self, context: CliModelDiscoveryContext | None = None) -> list[str]:
         """Discover selectable models by parsing ``agy models`` (verified live against agy v1.1.1).
 
         Real command, not a hard-coded list: ``agy models`` prints one model label per line

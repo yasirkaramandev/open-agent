@@ -292,7 +292,7 @@ async def test_cli_model_discovery_populates_select_and_pins_model(tmp_path: Pat
 
     from openagent.runtimes.cli.registry import CliModelDiscovery
 
-    async def _fake_discover(cli_type, executable=None):
+    async def _fake_discover(cli_type, executable=None, *, project_root=None):
         return CliModelDiscovery(
             cli_type, True, ["Gemini 3.5 Flash (Low)", "Claude Sonnet 4.6"], "agy models"
         )
@@ -330,7 +330,7 @@ async def test_cli_model_discovery_unavailable_keeps_manual_and_default_paths(
 
     from openagent.runtimes.cli.registry import CliModelDiscovery
 
-    async def _fake_discover(cli_type, executable=None):
+    async def _fake_discover(cli_type, executable=None, *, project_root=None):
         return CliModelDiscovery(
             cli_type, False, [], "", "automatic model discovery is unavailable for Codex CLI"
         )
@@ -383,7 +383,7 @@ async def test_switching_cli_resets_the_discovered_model_list(tmp_path: Path, mo
     """A discovered list must not leak across a CLI change (item 11)."""
     from openagent.runtimes.cli.registry import CliModelDiscovery
 
-    async def _fake_discover(cli_type, executable=None):
+    async def _fake_discover(cli_type, executable=None, *, project_root=None):
         if cli_type == "antigravity":
             return CliModelDiscovery("antigravity", True, ["Gemini 3.5 Flash (Low)"], "agy models")
         return CliModelDiscovery(cli_type, False, [], "", "does not expose model listing")

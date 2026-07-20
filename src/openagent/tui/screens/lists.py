@@ -385,7 +385,14 @@ class CliToolsScreen(_TableScreen):
     async def _discover(self) -> None:
         installations = await self.app.oa.clis.discover(persist=True)  # type: ignore[attr-defined]
         for installation in installations:
-            result = await discover_cli_models(installation.type, installation.executable)
+            result = await discover_cli_models(
+                installation.type,
+                installation.executable,
+                # Model availability depends on the project: a repository whose
+                # .claude/settings.json pins availableModels has a different list from the
+                # generic aliases. Without this the count shown here was project-blind.
+                project_root=self.app.oa.paths.project_root,  # type: ignore[attr-defined]
+            )
             self._model_counts[installation.type] = (
                 str(len(result.models)) if result.available else "manual/default"
             )

@@ -821,7 +821,13 @@ class AddAgentScreen(SecretInputMixin, Screen):
             self.run_worker(self._do_discover_api(), exclusive=True)
 
     async def _do_discover_cli(self, cli_type: str, executable: str | None) -> None:
-        result = await discover_cli_models(cli_type, executable)
+        result = await discover_cli_models(
+            cli_type,
+            executable,
+            # The agent being created will run in this project, so the model list offered must be
+            # the one that project can actually use.
+            project_root=self.app.oa.paths.project_root,  # type: ignore[attr-defined]
+        )
         self._apply_cli_models(result)
 
     def _apply_cli_models(self, result: CliModelDiscovery) -> None:

@@ -19,6 +19,7 @@ from ..reporting.openagent_md import render_agents_block
 from ..runtimes.cli.registry import (
     cli_install_status,
     cli_registry_entries,
+    discover_cli_models,
     known_cli_types,
 )
 from ..storage.event_log import EventLog
@@ -279,13 +280,7 @@ class DoctorService:
                     data=update_data,
                 )
             )
-            checks.append(
-                Check(
-                    f"{name} model discovery",
-                    OK if entry.model_discovery_method else WARN,
-                    entry.model_discovery_method or "manual model id or CLI default",
-                )
-            )
+            checks.append(await self._model_discovery_check(name, entry))
             active_runs = self.app.clis.active_run_ids(entry.type)
             checks.append(
                 Check(
@@ -319,6 +314,74 @@ class DoctorService:
                     )
                 checks.append(self._antigravity_permission_check())
         return checks
+
+    async def _model_discovery_check(self, name: str, entry) -> Check:
+        """Report what discovery actually returned, not merely that a method name exists.
+
+        The previous check was ``OK if entry.model_discovery_method else WARN``. That attribute is
+        a **static class attribute** on each adapter, so it is always a non-empty string — the
+        check reported OK unconditionally and never ran discovery at all. A CLI whose model listing
+        was broken, unauthorised, or returning nothing looked healthy in ``openagent doctor``,
+        which is precisely the command a user runs to find out why it is not.
+
+        Discovery is run for the *current project*, since a repository's ``.claude/settings.json``
+        can change the answer, and reported with the fields that let a user act: how the list was
+        obtained, how many models it holds, whether it is partial, and the real error if any.
+        """
+
+        try:
+            result = await discover_cli_models(
+                entry.type,
+                entry.executable,
+                project_root=self.app.paths.project_root,
+            )
+        except Exception as exc:  # noqa: BLE001 - a broken probe is a diagnostic, not a crash
+            return Check(
+                f"{name} model discovery",
+                WARN,
+                f"discovery raised {type(exc).__name__}: {str(exc)[:200]}",
+                data={"available": False, "error": str(exc)[:500]},
+            )
+
+        data = {
+            "available": result.available,
+            "method": result.method,
+            "model_count": len(result.models),
+            "partial": result.partial,
+            "error": result.error or None,
+            "project_root": str(self.app.paths.project_root),
+        }
+
+        if not result.available:
+            # Not a failure: several CLIs legitimately have no offline model listing, and a manual
+            # model id or the CLI's own default is a supported configuration.
+            return Check(
+                f"{name} model discovery",
+                WARN,
+                result.error or "no model listing; use a manual model id or the CLI default",
+                data=data,
+            )
+        if result.partial:
+            return Check(
+                f"{name} model discovery",
+                WARN,
+                f"{len(result.models)} model(s) via {result.method}; "
+                f"incomplete: {result.error or 'some sources did not answer'}",
+                data=data,
+            )
+        if not result.models:
+            return Check(
+                f"{name} model discovery",
+                WARN,
+                f"{result.method} returned no models",
+                data=data,
+            )
+        return Check(
+            f"{name} model discovery",
+            OK,
+            f"{len(result.models)} model(s) via {result.method}",
+            data=data,
+        )
 
     @staticmethod
     def exit_code(checks: list[Check]) -> int:

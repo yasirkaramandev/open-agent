@@ -56,7 +56,9 @@ def test_initial_replay_pages_without_rereading_history(tmp_path: Path, monkeypa
     replayed = asyncio.run(tailer.initial_replay())
     asyncio.run(tailer.stop())
 
-    assert len(replayed) == 1_200
+    # A count, not the events: initial_replay delivers each page as it reads it and must not also
+    # hold the whole history in a second list nobody reads.
+    assert replayed == 1_200
     assert len(delivered) == 1_200
     assert calls[0] == 0
     assert calls == sorted(calls)

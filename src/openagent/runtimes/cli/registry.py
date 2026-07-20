@@ -7,12 +7,14 @@ the TUI never hard-codes the list of CLIs.
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from ...core.models import CliInstallation
 from .antigravity import AntigravityAdapter
-from .base import CliAdapter
+from .base import CliAdapter, CliModelDiscoveryContext
 from .claude import ClaudeAdapter
 from .codex import CodexAdapter
 from .model_discovery import CliModelOption
@@ -150,7 +152,12 @@ class CliModelDiscovery:
     partial: bool = False
 
 
-async def discover_cli_models(cli_type: str, executable: str | None = None) -> CliModelDiscovery:
+async def discover_cli_models(
+    cli_type: str,
+    executable: str | None = None,
+    *,
+    project_root: Path | None = None,
+) -> CliModelDiscovery:
     """Discover a CLI's models via its own real command — never a hard-coded guess (Phase 4).
 
     The single adapter-level contract: an adapter that can enumerate models offline exposes an async
@@ -174,8 +181,17 @@ async def discover_cli_models(cli_type: str, executable: str | None = None) -> C
             f"automatic model discovery is unavailable for {cli_display_name(cli_type)}; "
             "type a model id manually, or leave it blank to use the CLI's own default",
         )
+    context = CliModelDiscoveryContext(project_root=project_root, executable=executable)
+    # Whether this adapter accepts a context is decided by *inspecting* it, not by calling it and
+    # catching TypeError. Catching would swallow a genuine TypeError raised from inside a
+    # context-aware adapter and silently retry it without the context — turning a real bug into a
+    # quietly degraded result.
     try:
-        models = await lister()
+        accepts_context = bool(inspect.signature(lister).parameters)
+    except (TypeError, ValueError):  # pragma: no cover - exotic callables without a signature
+        accepts_context = False
+    try:
+        models = await (lister(context) if accepts_context else lister())
     except Exception as exc:  # noqa: BLE001 - discovery is best-effort; surface the real reason
         return CliModelDiscovery(cli_type, False, [], method, str(exc))
     catalog = getattr(adapter, "last_model_discovery", None)
