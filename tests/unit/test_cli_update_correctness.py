@@ -30,9 +30,11 @@ from openagent.core.models import (
     CliUpdateState,
     CliUpdateStatus,
 )
+from openagent.core.versioning import is_newer as _is_newer
+from openagent.core.versioning import parse_version
 from openagent.runtimes.cli.installations import _npm_owns
 from openagent.runtimes.cli.locator import CommandResult, ExecutableCandidate
-from openagent.runtimes.cli.updates import _is_newer, parse_version, perform_update
+from openagent.runtimes.cli.updates import perform_update
 
 pytestmark = pytest.mark.unit
 

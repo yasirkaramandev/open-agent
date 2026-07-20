@@ -17,6 +17,8 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .versioning import canonical_version
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -372,11 +374,19 @@ class CliInstallation(BaseModel):
 
     @property
     def version_verified(self) -> bool:
-        """Whether the *detected* version is the one the adapter was validated against."""
+        """Whether the *detected* version is the one the adapter was validated against.
+
+        Comparison goes through the single version authority (spec §12), so a prerelease is never
+        treated as equal to its release: an adapter validated against ``1.2.0`` is **not** verified
+        against a detected ``1.2.0rc1``. A version that cannot be parsed is fail-closed — unverified,
+        never silently verified.
+        """
 
         if not self.version or not self.validated_version:
             return False
-        return _normalize_version(self.version) == _normalize_version(self.validated_version)
+        detected = canonical_version(self.version)
+        validated = canonical_version(self.validated_version)
+        return detected is not None and detected == validated
 
     @property
     def verification_label(self) -> str:
@@ -389,12 +399,6 @@ class CliInstallation(BaseModel):
         if self.version_verified:
             return "Verified live"
         return "Installed but current version unverified"
-
-
-def _normalize_version(value: str) -> str:
-    """Compare versions on their digits/dots, so 'codex-cli 0.142.5' == '0.142.5'."""
-
-    return "".join(ch for ch in value if ch.isdigit() or ch == ".").strip(".")
 
 
 # --------------------------------------------------------------------------- runs/sessions

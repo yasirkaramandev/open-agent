@@ -21,6 +21,7 @@ from urllib.parse import unquote, urlsplit
 from pydantic import BaseModel, ConfigDict, Field
 
 from .. import __version__
+from ..core.versioning import canonical_version, is_newer
 from ..credentials.redaction import redact
 from ..runtimes.cli.locator import CommandResult, run_bounded
 from ..runtimes.cli.updates import (
@@ -164,27 +165,12 @@ def _one_line(result: CommandResult) -> str | None:
     return None
 
 
-def _version(value: str | None) -> str | None:
-    if not value:
-        return None
-    match = re.search(r"(?<!\d)(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?!\d)", value)
-    return match.group(1) if match else None
-
-
-def _version_tuple(value: str | None) -> tuple[int, int, int] | None:
-    parsed = _version(value)
-    if parsed is None:
-        return None
-    base = parsed.split("-", 1)[0].split("+", 1)[0]
-    major, minor, patch = base.split(".")
-    return int(major), int(minor), int(patch)
-
-
-def _compare(latest: str, current: str) -> bool | None:
-    left, right = _version_tuple(latest), _version_tuple(current)
-    if left is None or right is None:
-        return None
-    return left > right
+# The single version authority. The previous local ``_version``/``_version_tuple``/``_compare``
+# helpers re-derived version parsing with a regex and an integer tuple, silently discarding
+# prerelease metadata — so ``0.1.6rc1`` parsed to ``0.1.6`` and a release candidate compared equal
+# to its release. All version questions now go through ``core.versioning`` (spec §4).
+_version = canonical_version
+_compare = is_newer
 
 
 def _official_origin(value: str) -> bool:

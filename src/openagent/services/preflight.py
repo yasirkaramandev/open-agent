@@ -22,7 +22,6 @@ blocks immediately.
 from __future__ import annotations
 
 import os
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -36,6 +35,7 @@ from ..core.models import (
     RuntimeType,
 )
 from ..core.permissions import PROFILES, get_profile
+from ..core.versioning import version_at_least
 from ..credentials.redaction import redact, secret_scope
 from ..providers.factory import build_adapter, resolve_base_url
 from ..runtimes.cli.antigravity import AntigravityAdapter
@@ -255,13 +255,25 @@ class PreflightService:
         )
 
         if installation.minimum_version:
-            minimum_ok = _version_at_least(version, installation.minimum_version)
-            report.add(
-                "CLI minimum-version policy",
-                minimum_ok,
-                f"detected {version or 'unknown'}, required {installation.minimum_version}",
-                error_type="cli_version_unsupported",
-            )
+            minimum_ok = version_at_least(version, installation.minimum_version)
+            # ``None`` means the detected or the minimum version could not be parsed, so the policy
+            # cannot be evaluated. A minimum-version policy that cannot be checked is fail-closed:
+            # it blocks with an honest reason, never silently passes as "supported" (spec §12).
+            if minimum_ok is None:
+                report.add(
+                    "CLI minimum-version policy",
+                    False,
+                    f"detected {version or 'unknown'} and required "
+                    f"{installation.minimum_version} could not be compared safely",
+                    error_type="cli_version_unsupported",
+                )
+            else:
+                report.add(
+                    "CLI minimum-version policy",
+                    minimum_ok,
+                    f"detected {version or 'unknown'}, required {installation.minimum_version}",
+                    error_type="cli_version_unsupported",
+                )
 
         await self._check_cli_update_policy(
             report,
@@ -621,15 +633,3 @@ def antigravity_permission_status(profile_name: str) -> tuple[bool, str]:
 
 def find_cli_executable(cli_type: str) -> str | None:
     return locate_candidates(cli_type).active_executable
-
-
-def _version_at_least(current: str | None, minimum: str) -> bool:
-    def parts(value: str | None) -> tuple[int, ...] | None:
-        match = re.search(r"\d+(?:\.\d+)+", value or "")
-        return tuple(int(part) for part in match.group(0).split(".")) if match else None
-
-    left, right = parts(current), parts(minimum)
-    if left is None or right is None:
-        return False
-    width = max(len(left), len(right))
-    return left + (0,) * (width - len(left)) >= right + (0,) * (width - len(right))

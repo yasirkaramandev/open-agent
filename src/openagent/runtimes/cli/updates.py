@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ...core.models import (
@@ -23,6 +22,7 @@ from ...core.models import (
     CliUpdateState,
     CliUpdateStatus,
 )
+from ...core.versioning import is_newer as _is_newer
 from ...security.atomic import atomic_write_text
 from ...security.file_lock import LockTimeout, file_lock
 from ...security.process import minimal_environment
@@ -152,62 +152,6 @@ def fetch_bytes(url: str, timeout: int, max_body_bytes: int) -> bytes:
     if not body:
         raise ValueError("installer response was empty")
     return bytes(body)
-
-
-#: A version as it appears inside a `--version` line, which is rarely just the version:
-#: "claude 1.2.3 (Claude Code)", "codex-cli 0.5.0-rc.2", "1.2.0rc1".
-#:
-#: The trailing group must accept a suffix attached with **no separator at all** (``1.2.0rc1``, PEP
-#: 440's own spelling) as well as one introduced by ``-``/``+``/``.`` (``0.5.0-rc.2``, SemVer's).
-#: An earlier version of this pattern required the separator, so ``1.2.0rc1`` matched only its
-#: ``1.2.0`` prefix — silently reintroducing the exact "a prerelease equals its release" bug this
-#: function exists to prevent. Requiring the suffix to start with an alphanumeric is what keeps the
-#: match from running into " (Claude Code)".
-_VERSION_PATTERN = re.compile(r"\d+(?:\.\d+)*(?:[-+.]?[0-9A-Za-z][0-9A-Za-z.+-]*)?")
-
-
-def parse_version(value: str | None) -> Version | None:
-    """Extract and parse a version, or None when there is nothing comparable.
-
-    The previous implementation was ``re.search(r"\\d+(?:\\.\\d+)+")`` followed by a tuple compare
-    of the integer components. That silently discarded prerelease and build metadata, so ``1.2.0``
-    and ``1.2.0rc1`` parsed to the same tuple and compared **equal** — meaning an installed release
-    candidate was reported as already current, and an update to the real release never happened.
-
-    PEP 440 ordering (via ``packaging``) is not something to re-derive locally: it has to know that
-    ``1.2.0rc1 < 1.2.0``, that ``1.2.0.post1 > 1.2.0``, and that build metadata does not affect
-    ordering. Versions that are not PEP 440 (some CLIs ship SemVer with a ``-rc.2`` suffix) are
-    normalised where possible and reported as unparseable otherwise — never silently equal.
-    """
-
-    if not value:
-        return None
-    match = _VERSION_PATTERN.search(value)
-    if not match:
-        return None
-    raw = match.group(0).rstrip(".-+")
-    try:
-        return Version(raw)
-    except InvalidVersion:
-        # SemVer prerelease syntax ("0.5.0-rc.2") is not PEP 440 but is unambiguous; normalising the
-        # separator is a mechanical translation, not a guess about intent.
-        try:
-            return Version(raw.replace("-", ""))
-        except InvalidVersion:
-            return None
-
-
-def _is_newer(latest: str | None, current: str | None) -> bool | None:
-    """Whether ``latest`` is strictly newer. ``None`` means "could not be determined".
-
-    The three-valued return matters: callers must not treat "unparseable" as "up to date". That
-    conflation is what let a failed update report success.
-    """
-
-    left, right = parse_version(latest), parse_version(current)
-    if left is None or right is None:
-        return None
-    return left > right
 
 
 def _json_command(
