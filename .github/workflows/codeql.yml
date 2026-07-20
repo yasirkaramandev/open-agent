@@ -1,0 +1,54 @@
+# CodeQL static analysis.
+#
+# Two languages are scanned. `python` is the obvious one; `actions` is scanned because the
+# workflows in this repository run with a token and consume untrusted PR input, and a workflow
+# injection is as real a vulnerability as one in the package.
+#
+# The `security-extended` suite is used rather than the default: the default suite optimises for a
+# low false-positive rate on large codebases, and this repository is small enough to triage the
+# extra queries. Findings surface as GitHub code-scanning alerts, not as CI log noise.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, so a newly published query finds an existing vulnerability without waiting for the
+    # next commit to this repository.
+    - cron: "27 4 * * 1"
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: codeql (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # Required to upload the SARIF results as code-scanning alerts.
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ["python", "actions"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

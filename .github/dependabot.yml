@@ -1,0 +1,62 @@
+# Dependabot: weekly dependency and workflow-action updates.
+#
+# Grouped deliberately. Ungrouped Dependabot opens one PR per package, and on a repository whose
+# required-check set is this wide that means a dozen full CI runs a week for changes that are
+# reviewed as a unit anyway. The runtime group is kept separate from the development group because
+# a runtime bump ships to users and a dev-tool bump does not — they warrant different scrutiny.
+#
+# Note that `ruff` is pinned exactly in [dev] on purpose (`ruff format --check` is a CI gate), so
+# its updates arrive here as explicit, reviewable PRs rather than drifting silently.
+version: 2
+
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "type:chore"
+      - "area:dependencies"
+    groups:
+      python-runtime:
+        applies-to: version-updates
+        patterns:
+          - "textual"
+          - "typer"
+          - "pydantic"
+          - "sqlalchemy"
+          - "httpx"
+          - "anyio"
+          - "keyring"
+          - "psutil"
+          - "jsonschema"
+          - "platformdirs"
+          - "pyyaml"
+          - "rich"
+          - "packaging"
+      python-dev-tools:
+        applies-to: version-updates
+        patterns:
+          - "pytest*"
+          - "ruff"
+          - "mypy"
+          - "types-*"
+          - "build"
+          - "hypothesis"
+          - "coverage*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    labels:
+      - "type:chore"
+      - "area:ci"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

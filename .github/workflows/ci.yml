@@ -42,8 +42,30 @@ jobs:
       - name: Mypy
         run: mypy src
 
+      # Branch coverage, not line coverage. A line-covered `except` arm whose branch is never
+      # taken reports as covered while the unhappy path stays untested — and the unhappy paths
+      # (credential resolution failure, migration conflict, lock timeout) are where this project's
+      # bugs live.
       - name: Pytest (offline suite — no API keys, no live CLIs)
-        run: pytest -q
+        run: coverage run -m pytest -q
+
+      - name: Coverage report
+        run: |
+          coverage combine || true
+          coverage report
+          coverage xml
+
+      # Global thresholds are a floor, not a target. The modules that can lose a secret or corrupt
+      # the database are held to a much higher bar; see the script for the per-module table.
+      - name: Critical-module branch coverage
+        run: python scripts/check_critical_coverage.py
+
+      - name: Upload coverage XML
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
 
       - name: Build sdist + wheel
         run: python -m build

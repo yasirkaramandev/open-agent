@@ -41,6 +41,11 @@ dependencies = [
     "platformdirs>=4.2",
     "pyyaml>=6.0",
     "rich>=13.7",
+    # Version comparison for the CLI updater. The previous hand-rolled regex parser
+    # (`\d+(?:\.\d+)+`) silently dropped prerelease and build metadata, so `1.2.0rc1` and `1.2.0`
+    # compared equal and an updater could report "already current" for a prerelease. PEP 440
+    # ordering is not something to re-derive locally.
+    "packaging>=24",
 ]
 
 [project.optional-dependencies]
@@ -56,6 +61,13 @@ dev = [
     "types-pyyaml",
     "types-psutil",
     "build>=1.2",
+    # Stateful property testing for the provider/agent state machine. Hypothesis generates
+    # *operation sequences* (create → crash → recover → update), not just data, which is exactly
+    # the shape of the concurrency bugs the 0.1.6 work targets.
+    "hypothesis>=6",
+    # Branch coverage, not line coverage: an `except` arm that is never entered is invisible to
+    # line coverage but is precisely where the unhappy-path bugs live.
+    "coverage[toml]>=7",
 ]
 
 [project.scripts]
@@ -99,4 +111,36 @@ markers = [
     "integration: opt-in tests that hit live APIs (require API keys in env)",
     "live_cli: tests that invoke a real installed CLI (codex/claude/…)",
     "container: tests that require an explicitly provisioned local Docker/Podman image",
+    # Classification markers (spec: Aşama 0). CI splits on these so a fast PR gate can run the
+    # unit/lint layer while the slower subprocess/multiprocess/migration layers run separately —
+    # without any of them silently dropping out of the required set.
+    "unit: in-process tests with no subprocess, no network and no real filesystem lock",
+    "subprocess: spawns a real child process (env inheritance, secret isolation, git hooks)",
+    "multiprocess: coordinates several OpenAgent processes to exercise a real race",
+    "migration: runs the schema migration runner against a fixture database",
+    "security: asserts a security invariant (secret redaction, hook suppression, sandbox escape)",
+    "tui: drives the Textual interface",
+    "slow: takes more than a few seconds; excluded from the fast PR gate",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["openagent"]
+parallel = true
+
+[tool.coverage.paths]
+# Coverage may be collected against the editable checkout or an installed wheel; both map to the
+# same reported files so a CI matrix does not produce two disjoint reports.
+source = ["src/openagent", "*/site-packages/openagent"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@(abc\\.)?abstractmethod",
+    "if __name__ == .__main__.:",
+    # Platform-specific arms cannot both be exercised in one CI run.
+    "pragma: no cover - platform-specific",
 ]

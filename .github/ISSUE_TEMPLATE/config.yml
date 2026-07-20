@@ -1,0 +1,12 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability (private disclosure)
+    url: https://github.com/yasirkaramandev/openagent/security/advisories/new
+    about: >
+      Exploitable vulnerabilities — secret disclosure, sandbox escape, command-policy bypass,
+      arbitrary code execution — must be reported privately, never as a public issue.
+  - name: Question or usage help
+    url: https://github.com/yasirkaramandev/openagent/discussions
+    about: >
+      For "how do I…" and "is this supposed to…", start a discussion. If it turns out to be a bug,
+      it can be converted into an issue with the context already attached.

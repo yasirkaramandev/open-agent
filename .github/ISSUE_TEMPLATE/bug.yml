@@ -1,0 +1,125 @@
+name: Bug report
+description: Something behaves differently from what it documents.
+labels: ["type:bug", "status:needs-repro"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filling this in, please run `openagent doctor --json` — most of the fields below
+        come straight out of it.
+
+        **Never paste a real API key, token, or `.credentials.json` content into this form.**
+        OpenAgent redacts secrets from its own output, but a shell transcript you copy by hand is
+        not redacted.
+
+  - type: input
+    id: version
+    attributes:
+      label: OpenAgent version
+      description: Output of `openagent version`.
+      placeholder: "0.1.4"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 15.5 (arm64) / Windows 11 / Ubuntu 24.04"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: Output of `python --version` in the environment OpenAgent runs from.
+      placeholder: "3.12.4"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-source
+    attributes:
+      label: How was OpenAgent installed?
+      description: Provenance changes which update and upgrade paths apply.
+      options:
+        - setup.sh / setup.ps1 / setup.bat installer
+        - uv tool install
+        - pipx install
+        - pip install into a venv
+        - editable checkout (pip install -e)
+        - other / unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact command
+      description: The full command line, verbatim. Redact secrets, keep everything else.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the exit code if the command failed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Numbered steps, starting from a fresh state where possible.
+      placeholder: |
+        1. openagent provider add …
+        2. openagent agents add …
+        3. openagent run …
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or doctor output
+      description: >
+        `openagent doctor --json` and any error output. Truncate long logs to the relevant window.
+      render: shell
+
+  - type: dropdown
+    id: secrets
+    attributes:
+      label: Does anything you pasted above contain a secret?
+      description: >
+        If yes, stop and edit it out before submitting. A key pasted into a public issue must be
+        treated as compromised and rotated, even if the issue is deleted afterwards.
+      options:
+        - "No — I checked"
+        - "Yes — I will redact before submitting"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: regression-test
+    attributes:
+      label: Can this be captured as a regression test?
+      description: >
+        Every fix lands with a test that fails before it. Knowing the smallest reproducing case
+        up front is the most useful thing in this form.
+      options:
+        - "Yes — I can describe the assertion"
+        - "Probably, but I am not sure how to isolate it"
+        - "No — it depends on my local environment"
+    validations:
+      required: true

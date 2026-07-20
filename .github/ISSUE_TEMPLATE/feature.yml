@@ -1,0 +1,53 @@
+name: Feature request
+description: A new capability.
+labels: ["type:feature", "release:future"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Feature freeze is in effect
+
+        New user-facing features are frozen until v0.1.6 has shipped and run without a critical
+        bug for at least seven days. See [ROADMAP.md](../../ROADMAP.md).
+
+        Requests are still welcome — they will be triaged into `release:future` and picked up when
+        the freeze lifts. Filing one now is how it gets remembered.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What you are trying to accomplish, and where the current workflow breaks down. Please
+        describe the situation rather than the solution — the best implementation is often not the
+        one the requester had in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed capability
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Current workaround
+      description: What you do today instead, and why it is unsatisfactory.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Does this expand the security or concurrency surface?
+      description: >
+        Scheduling, remote workers, plugin loading, webhooks and cloud sync all widen the blast
+        radius of the credential and concurrency work in progress. Being honest here affects
+        sequencing, not whether the request is accepted.
+      options:
+        - "No — local, single-process, no new credentials"
+        - "Yes — new subprocess, network egress, or credential handling"
+        - "Unsure"
+    validations:
+      required: true

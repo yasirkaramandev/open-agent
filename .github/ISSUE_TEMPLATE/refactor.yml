@@ -1,0 +1,56 @@
+name: Refactor
+description: A structural change with no intended behavior change.
+labels: ["type:refactor"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A refactor that cannot be verified behavior-preserving is a rewrite. The most important
+        field here is the last one.
+
+  - type: textarea
+    id: current
+    attributes:
+      label: Current structure
+      description: Which files/functions, and what makes the current shape a problem.
+      placeholder: "src/openagent/… — describe the coupling, duplication, or missing seam."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed structure
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: What this unblocks
+      description: >
+        Refactors are not their own justification. Name the bug that is hard to fix, the test that
+        is impossible to write, or the feature that is blocked by the current shape.
+    validations:
+      required: true
+
+  - type: textarea
+    id: equivalence
+    attributes:
+      label: How behavior-preservation will be demonstrated
+      description: >
+        Which existing tests cover the affected paths, and which characterization tests need to be
+        added *before* the refactor starts.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk
+      options:
+        - "Low — pure code motion, fully covered by existing tests"
+        - "Medium — signatures change, callers updated"
+        - "High — touches persistence, concurrency, or security boundaries"
+    validations:
+      required: true

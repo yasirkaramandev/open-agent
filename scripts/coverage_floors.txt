@@ -1,0 +1,14 @@
+# Measured branch-coverage floors, enforced by scripts/check_critical_coverage.py.
+# Regenerate with: python scripts/check_critical_coverage.py --update-floors
+# Never lower a value by hand to make CI pass — that is the one thing this file exists
+# to prevent. If coverage legitimately drops (a module was deleted, a branch became
+# unreachable), say so in the pull request description.
+
+openagent/credentials = 79.7
+openagent/runtimes/cli/updates.py = 54.6
+openagent/security = 73.3
+openagent/services/agent_service.py = 59.1
+openagent/services/provider_service.py = 73.4
+openagent/storage/migrations.py = 66.3
+openagent/storage/repositories.py = 75.0
+openagent/tui = 62.0

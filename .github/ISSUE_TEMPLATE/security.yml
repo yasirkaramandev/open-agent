@@ -1,0 +1,72 @@
+name: Security issue (non-sensitive only)
+description: A hardening gap that is safe to discuss in public.
+labels: ["type:security", "priority:P1"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Stop if this is exploitable
+
+        Do **not** file a public issue for a vulnerability that could be exploited against
+        existing users — secret disclosure, sandbox escape, command-policy bypass, or arbitrary
+        code execution. Report those privately: see [SECURITY.md](../../SECURITY.md).
+
+        This form is for hardening work that is safe to discuss in the open — a missing defence in
+        depth, a documented limitation, a check that should be fail-closed but is fail-open.
+
+  - type: checkboxes
+    id: confirm-not-exploitable
+    attributes:
+      label: Disclosure check
+      options:
+        - label: >
+            I have read SECURITY.md and this is not a directly exploitable vulnerability against
+            current users.
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: OpenAgent version
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Credential storage or resolution
+        - Secret redaction in output/logs/artifacts
+        - Subprocess environment isolation
+        - Command policy / validators
+        - Workspace or filesystem containment
+        - Container sandbox
+        - CLI updater / install provenance
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: weakness
+    attributes:
+      label: The weakness
+      description: What the current behavior is, and which invariant it fails to uphold.
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: >
+        What an attacker who already has the described position could achieve. Be concrete about
+        the preconditions — "given a malicious repository the user has cloned" is a different
+        threat model from "given a malicious prompt".
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggested
+    attributes:
+      label: Suggested hardening
