@@ -659,6 +659,196 @@ def _m011_domain_json_validation(conn: Connection) -> None:
     _validate_domain_records(conn)
 
 
+#: ``provider_connections`` with the uniqueness and concurrency columns v0.1.6 needs.
+_PROVIDERS_TARGET_DDL = """
+CREATE TABLE provider_connections_new (
+    id VARCHAR NOT NULL,
+    name VARCHAR NOT NULL,
+    normalized_name VARCHAR NOT NULL,
+    provider_type VARCHAR NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    state_revision INTEGER NOT NULL DEFAULT 0,
+    updated_at VARCHAR NOT NULL DEFAULT '',
+    data JSON NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE (name),
+    UNIQUE (normalized_name)
+)
+"""
+
+#: ``agents`` with a real foreign key to the provider it binds to.
+#:
+#: ``provider_id`` is nullable because a CLI agent has no provider at all — the constraint is
+#: "if you name a provider, it must exist", not "you must name one". ``ON DELETE RESTRICT`` is what
+#: replaces the check-then-act in ProviderService.remove(), which read the agent list and then
+#: deleted, leaving a window for another process to bind a new agent in between.
+_AGENTS_TARGET_DDL = """
+CREATE TABLE agents_new (
+    name VARCHAR NOT NULL,
+    normalized_name VARCHAR NOT NULL,
+    title VARCHAR NOT NULL DEFAULT '',
+    runtime_type VARCHAR NOT NULL,
+    provider_id VARCHAR REFERENCES provider_connections (id) ON DELETE RESTRICT,
+    state_revision INTEGER NOT NULL DEFAULT 0,
+    updated_at VARCHAR NOT NULL DEFAULT '',
+    data JSON NOT NULL,
+    PRIMARY KEY (name),
+    UNIQUE (normalized_name)
+)
+"""
+
+
+def _m012_provider_agent_concurrency(conn: Connection) -> None:
+    """Move provider/agent uniqueness and the agent→provider link into the database.
+
+    Three invariants that were previously enforced — where they were enforced at all — by Python
+    reading, deciding, and then writing, with no transaction spanning the two.
+
+    **Case-insensitive uniqueness.** ``provider_connections.name`` had a byte-exact ``UNIQUE``;
+    ``agents.name`` had only its primary key. So ``OpenAI`` and ``openai`` were two providers a user
+    could not tell apart. The canonical form is computed in Python (see ``core.naming``) because
+    SQLite's ``NOCASE`` folds ASCII only, and stored in ``normalized_name``, which carries the
+    constraint.
+
+    **The agent→provider link.** It lived only inside the agent's JSON blob, as a provider *name*.
+    Nothing stopped a provider from being deleted out from under an agent, and renaming a provider
+    silently broke every agent bound to it. ``provider_id`` is a real column with a real foreign
+    key, so the binding survives a rename and cannot dangle.
+
+    **Lost updates.** Neither table had a revision column, so two processes editing the same record
+    both wrote and the last one silently won. ``state_revision`` is the compare-and-swap token,
+    matching what ``runs`` has done since revision 0008.
+
+    A duplicate that already exists **blocks the migration** rather than being resolved
+    automatically. Picking a winner would destroy a provider the user may still be using, and the
+    two records are not interchangeable — they can hold different credentials and different base
+    URLs. The error names the exact rows so the user can merge them deliberately; the pre-migration
+    backup is retained by the runner either way.
+    """
+
+    from ..core.naming import normalize_name
+
+    if _table_exists(conn, "provider_connections") and not _column_exists(
+        conn, "provider_connections", "normalized_name"
+    ):
+        _rebuild_providers(conn, normalize_name)
+    if _table_exists(conn, "agents") and not _column_exists(conn, "agents", "normalized_name"):
+        _rebuild_agents(conn, normalize_name)
+
+
+def _reject_duplicates(rows: list[tuple[str, str]], label: str) -> None:
+    """Raise when two records normalize to the same name, naming them precisely.
+
+    ``rows`` is ``(identifier, name)``. Never deletes or renames: the user chooses which record to
+    keep, because only they know which credential is the live one.
+    """
+
+    from ..core.naming import normalize_name
+
+    groups: dict[str, list[str]] = {}
+    for identifier, name in rows:
+        groups.setdefault(normalize_name(name), []).append(f"{identifier} ({name!r})")
+    collisions = {key: members for key, members in groups.items() if len(members) > 1}
+    if not collisions:
+        return
+    detail = "; ".join(
+        f"{key!r}: {', '.join(members)}" for key, members in sorted(collisions.items())
+    )
+    raise MigrationVerificationError(
+        f"{label} names collide once case and Unicode form are normalized, so a uniqueness "
+        f"constraint cannot be added without losing one of them: {detail}. "
+        f"Rename or remove the duplicates, then upgrade again. No records were changed."
+    )
+
+
+def _rebuild_providers(conn: Connection, normalize) -> None:
+    rows = [
+        (str(row[0]), str(row[1]))
+        for row in conn.exec_driver_sql("SELECT id, name FROM provider_connections")
+    ]
+    _reject_duplicates(rows, "provider")
+
+    before_ids = {identifier for identifier, _ in rows}
+    conn.exec_driver_sql("DROP TABLE IF EXISTS provider_connections_new")
+    conn.exec_driver_sql(_PROVIDERS_TARGET_DDL)
+    # The normalized value has to be present *in the INSERT*, not patched in afterwards. Copying
+    # every row with a placeholder and then updating trips the UNIQUE constraint on the second row,
+    # because until the updates run they all share the placeholder. The value is computed in Python,
+    # so this is a row-at-a-time copy rather than INSERT ... SELECT.
+    for identifier, name in rows:
+        conn.execute(
+            text(
+                "INSERT INTO provider_connections_new "
+                "(id, name, normalized_name, provider_type, enabled, state_revision, updated_at, "
+                " data) "
+                "SELECT id, name, :normalized, provider_type, enabled, 0, '', data "
+                "FROM provider_connections WHERE id=:id"
+            ),
+            {"normalized": normalize(name), "id": identifier},
+        )
+
+    after_ids = {
+        str(row[0]) for row in conn.exec_driver_sql("SELECT id FROM provider_connections_new")
+    }
+    if after_ids != before_ids:
+        raise MigrationVerificationError(
+            f"provider rebuild would lose data: {len(before_ids - after_ids)} id(s) missing"
+        )
+    conn.exec_driver_sql("DROP TABLE provider_connections")
+    conn.exec_driver_sql("ALTER TABLE provider_connections_new RENAME TO provider_connections")
+
+
+def _rebuild_agents(conn: Connection, normalize) -> None:
+    rows = [
+        (str(row[0]), str(row[1] or "{}"))
+        for row in conn.exec_driver_sql("SELECT name, data FROM agents")
+    ]
+    _reject_duplicates([(name, name) for name, _ in rows], "agent")
+
+    # Resolve each agent's provider *name* (what the JSON stores) to a provider id. An API agent
+    # naming a provider that does not exist is left with a NULL binding rather than blocking the
+    # upgrade: that agent is already broken today, and refusing to start OpenAgent over it would
+    # take away the only interface that can fix it.
+    providers = {
+        str(row[1]): str(row[0])
+        for row in conn.exec_driver_sql("SELECT id, name FROM provider_connections")
+    }
+    bindings: dict[str, str | None] = {}
+    for name, raw in rows:
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            payload = {}
+        runtime = payload.get("runtime") if isinstance(payload, dict) else None
+        provider_name = runtime.get("provider") if isinstance(runtime, dict) else None
+        bindings[name] = providers.get(provider_name) if isinstance(provider_name, str) else None
+
+    before_names = {name for name, _ in rows}
+    conn.exec_driver_sql("DROP TABLE IF EXISTS agents_new")
+    conn.exec_driver_sql(_AGENTS_TARGET_DDL)
+    # Row at a time, with normalized_name already set: a placeholder-then-update copy would violate
+    # the new UNIQUE constraint as soon as there are two agents.
+    for name, _ in rows:
+        conn.execute(
+            text(
+                "INSERT INTO agents_new "
+                "(name, normalized_name, title, runtime_type, provider_id, state_revision, "
+                " updated_at, data) "
+                "SELECT name, :normalized, title, runtime_type, :provider_id, 0, '', data "
+                "FROM agents WHERE name=:name"
+            ),
+            {"normalized": normalize(name), "provider_id": bindings[name], "name": name},
+        )
+
+    after_names = {str(row[0]) for row in conn.exec_driver_sql("SELECT name FROM agents_new")}
+    if after_names != before_names:
+        raise MigrationVerificationError(
+            f"agent rebuild would lose data: {len(before_names - after_names)} name(s) missing"
+        )
+    conn.exec_driver_sql("DROP TABLE agents")
+    conn.exec_driver_sql("ALTER TABLE agents_new RENAME TO agents")
+
+
 _FORWARD = (
     "Local user data revisions are forward-only; restoration uses the reported online backup."
 )
@@ -714,6 +904,13 @@ MIGRATIONS: list[Migration] = [
         "0010",
         "domain JSON validation",
         _m011_domain_json_validation,
+        _FORWARD,
+    ),
+    Migration(
+        "0012",
+        "0011",
+        "provider and agent concurrency schema",
+        _m012_provider_agent_concurrency,
         _FORWARD,
     ),
 ]

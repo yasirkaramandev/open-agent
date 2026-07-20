@@ -48,8 +48,17 @@ provider_connections = Table(
     metadata,
     Column("id", String, primary_key=True),
     Column("name", String, unique=True, nullable=False),
+    #: Case- and Unicode-folded name (see ``core.naming``). Uniqueness lives here rather than on
+    #: ``name`` alone because SQLite's NOCASE folds ASCII only, so ``OpenAI`` and ``openai`` were
+    #: two providers a user could not tell apart.
+    Column("normalized_name", String, unique=True, nullable=False, server_default=""),
     Column("provider_type", String, nullable=False),
     Column("enabled", Integer, nullable=False, default=1),
+    #: Optimistic-concurrency token, same contract as ``runs.state_revision``: an update only lands
+    #: if the row still carries the revision the writer read, so two processes editing one provider
+    #: cannot silently overwrite each other.
+    Column("state_revision", Integer, nullable=False, default=0, server_default="0"),
+    Column("updated_at", String, nullable=False, default="", server_default=""),
     Column("data", JSON, nullable=False),
 )
 
@@ -78,8 +87,20 @@ agents = Table(
     "agents",
     metadata,
     Column("name", String, primary_key=True),
+    Column("normalized_name", String, unique=True, nullable=False, server_default=""),
     Column("title", String, nullable=False, default=""),
     Column("runtime_type", String, nullable=False),
+    #: The provider this agent binds to, as a real reference. It previously lived only inside the
+    #: JSON blob and only as a provider *name*, so a rename broke the binding silently and a delete
+    #: could leave the agent pointing at nothing. NULL for CLI agents, which have no provider.
+    Column(
+        "provider_id",
+        String,
+        ForeignKey("provider_connections.id", ondelete="RESTRICT"),
+        nullable=True,
+    ),
+    Column("state_revision", Integer, nullable=False, default=0, server_default="0"),
+    Column("updated_at", String, nullable=False, default="", server_default=""),
     Column("data", JSON, nullable=False),
 )
 
@@ -247,11 +268,31 @@ class Database:
 
 
 def _configure_sqlite(engine: Engine) -> None:
+    """Per-connection pragmas.
+
+    ``WAL`` lets readers proceed while a writer is active, which is what makes a TUI session and a
+    concurrent ``openagent`` command usable at the same time. It is **not** by itself a fix for the
+    lost-update problem: WAL still permits only one writer, and two writers that each read, decide,
+    and then write will still clobber one another. That is what the ``state_revision``
+    compare-and-swap and the DB-level uniqueness constraints are for — WAL only removes the
+    reader-blocks-writer stall on top.
+
+    ``synchronous=FULL`` rather than the WAL default of ``NORMAL``. In NORMAL mode a writer may skip
+    the WAL sync at commit, so a power loss can lose recently committed transactions. OpenAgent's
+    writes are small metadata records where the durability is worth far more than the syscall: the
+    thing being protected is the record of a credential that exists in the OS keychain, and losing
+    that mapping strands the secret.
+    """
+
     @event.listens_for(engine, "connect")
     def _set_pragmas(dbapi_connection, _connection_record) -> None:
         cursor = dbapi_connection.cursor()
         try:
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute("PRAGMA busy_timeout=30000")
+            # An in-memory database has no WAL to enable, and asking for one is a no-op that some
+            # SQLite builds report as an error.
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=FULL")
         finally:
             cursor.close()

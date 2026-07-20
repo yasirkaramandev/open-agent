@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, insert, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import IntegrityError
 
 from ..core.events import EventType, NormalizedEvent
 from ..core.limits import RUNTIME_LIMITS
@@ -32,25 +33,176 @@ from . import db as t
 from .db import Database
 
 
+class DuplicateNameError(RuntimeError):
+    """A record with the same name (case- and Unicode-folded) already exists."""
+
+    def __init__(self, kind: str, name: str) -> None:
+        self.kind = kind
+        self.name = name
+        super().__init__(f"a {kind} named {name!r} already exists")
+
+
+class ConcurrentModificationError(RuntimeError):
+    """The record changed underneath us; the caller's copy is stale.
+
+    Deliberately **not** retried automatically. A retry would re-apply the caller's fields on top of
+    whatever the other writer just committed, which is the lost update this class exists to prevent
+    — the user has to see the current state and decide.
+    """
+
+    def __init__(self, kind: str, identifier: str) -> None:
+        self.kind = kind
+        self.identifier = identifier
+        super().__init__(
+            f"this {kind} was changed by another OpenAgent process. "
+            f"Refresh the list and reapply your change."
+        )
+
+
+class ProviderInUseByAgentError(RuntimeError):
+    """A foreign key refused the delete because an agent still binds to this provider."""
+
+    def __init__(self, provider_id: str) -> None:
+        self.provider_id = provider_id
+        super().__init__(
+            "this provider is still used by at least one agent; change or remove those agents first"
+        )
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 class ProviderRepository:
+    """Insert-only creates and compare-and-swap updates.
+
+    The previous ``upsert`` was a real ``DELETE`` followed by an ``INSERT``. The table did carry a
+    byte-exact ``UNIQUE`` on ``name``, so an identical name was rejected — but as a raw
+    ``IntegrityError`` that ``upsert`` never caught and no caller could act on. What got through:
+
+    * names differing only in case or Unicode form (``OpenAI`` / ``openai``, composed versus
+      decomposed ``café``) were accepted as separate connections a user could not tell apart;
+    * a stale in-memory copy written back overwrote newer fields wholesale, with nothing to signal
+      that another process's change had just been discarded;
+    * between the DELETE and the INSERT the row did not exist at all, so a concurrent reader could
+      observe a provider vanish and reappear.
+
+    Create is now a plain ``INSERT`` whose uniqueness — including the folded form — is enforced by
+    the database and surfaced as :class:`DuplicateNameError`. Update is an
+    ``UPDATE ... WHERE state_revision = ?`` that affects zero rows when someone else got there
+    first.
+    """
+
     def __init__(self, database: Database) -> None:
         self.db = database
 
-    def upsert(self, provider: ProviderConnection) -> None:
-        payload = provider.model_dump(mode="json")
-        with self.db.engine.begin() as conn:
-            conn.execute(
-                sa_delete(t.provider_connections).where(t.provider_connections.c.id == provider.id)
-            )
-            conn.execute(
-                insert(t.provider_connections).values(
-                    id=provider.id,
-                    name=provider.name,
-                    provider_type=provider.provider_type,
-                    enabled=1 if provider.enabled else 0,
-                    data=payload,
+    def create(self, provider: ProviderConnection) -> None:
+        """Insert a new provider. Raises :class:`DuplicateNameError` if the name is taken.
+
+        Uniqueness is decided by the database, not by a preceding ``SELECT``. A check-then-insert
+        has a window between the two in which another process can insert the same name, and that
+        window is exactly what the 8-process race test exercises.
+        """
+
+        from ..core.naming import normalize_name
+
+        try:
+            with self.db.engine.begin() as conn:
+                conn.execute(
+                    insert(t.provider_connections).values(
+                        id=provider.id,
+                        name=provider.name,
+                        normalized_name=normalize_name(provider.name),
+                        provider_type=provider.provider_type,
+                        enabled=1 if provider.enabled else 0,
+                        state_revision=0,
+                        updated_at=_now_iso(),
+                        data=provider.model_dump(mode="json"),
+                    )
                 )
-            )
+        except IntegrityError as exc:
+            raise DuplicateNameError("provider", provider.name) from exc
+
+    def update(self, provider: ProviderConnection, *, expected_revision: int) -> int:
+        """Compare-and-swap update. Returns the new revision.
+
+        Raises :class:`ConcurrentModificationError` when the row no longer carries
+        ``expected_revision`` — meaning another process wrote in between and this copy is stale.
+        """
+
+        from ..core.naming import normalize_name
+
+        next_revision = expected_revision + 1
+        try:
+            with self.db.engine.begin() as conn:
+                result = conn.execute(
+                    update(t.provider_connections)
+                    .where(
+                        t.provider_connections.c.id == provider.id,
+                        t.provider_connections.c.state_revision == expected_revision,
+                    )
+                    .values(
+                        name=provider.name,
+                        normalized_name=normalize_name(provider.name),
+                        provider_type=provider.provider_type,
+                        enabled=1 if provider.enabled else 0,
+                        state_revision=next_revision,
+                        updated_at=_now_iso(),
+                        data=provider.model_dump(mode="json"),
+                    )
+                )
+        except IntegrityError as exc:
+            raise DuplicateNameError("provider", provider.name) from exc
+        if not result.rowcount:
+            raise ConcurrentModificationError("provider", provider.id)
+        return next_revision
+
+    def revision_of(self, provider_id: str) -> int | None:
+        with self.db.engine.connect() as conn:
+            row = conn.execute(
+                select(t.provider_connections.c.state_revision).where(
+                    t.provider_connections.c.id == provider_id
+                )
+            ).first()
+        return int(row[0]) if row else None
+
+    def upsert(self, provider: ProviderConnection) -> None:
+        """Create-or-replace, kept for callers that genuinely own the record exclusively.
+
+        Prefer :meth:`create` / :meth:`update`. This exists so migration-era and single-writer
+        paths (tests, fixtures, recovery) do not have to thread a revision through, and it is
+        implemented as an INSERT-or-UPDATE rather than the old DELETE+INSERT so the row is never
+        momentarily absent.
+        """
+
+        from ..core.naming import normalize_name
+
+        values = {
+            "name": provider.name,
+            "normalized_name": normalize_name(provider.name),
+            "provider_type": provider.provider_type,
+            "enabled": 1 if provider.enabled else 0,
+            "updated_at": _now_iso(),
+            "data": provider.model_dump(mode="json"),
+        }
+        with self.db.engine.begin() as conn:
+            existing = conn.execute(
+                select(t.provider_connections.c.state_revision).where(
+                    t.provider_connections.c.id == provider.id
+                )
+            ).first()
+            if existing is None:
+                conn.execute(
+                    insert(t.provider_connections).values(
+                        id=provider.id, state_revision=0, **values
+                    )
+                )
+            else:
+                conn.execute(
+                    update(t.provider_connections)
+                    .where(t.provider_connections.c.id == provider.id)
+                    .values(state_revision=int(existing[0]) + 1, **values)
+                )
 
     def get(self, provider_id: str) -> ProviderConnection | None:
         with self.db.engine.connect() as conn:
@@ -82,13 +234,27 @@ class ProviderRepository:
             )
 
     def delete_with_probes(self, provider_id: str) -> bool:
-        with self.db.engine.begin() as conn:
-            conn.execute(
-                sa_delete(t.model_probes).where(t.model_probes.c.provider_id == provider_id)
-            )
-            result = conn.execute(
-                sa_delete(t.provider_connections).where(t.provider_connections.c.id == provider_id)
-            )
+        """Delete a provider and its cached probes, in one transaction.
+
+        An agent still bound to this provider makes the foreign key refuse the delete, which is
+        raised as :class:`ProviderInUseByAgentError`. That check used to live in the service layer
+        as "list the agents, then delete if none matched" — two statements with a gap in which
+        another process could create an agent bound to the provider being removed. The constraint
+        closes the gap because both happen inside the same transaction as the delete itself.
+        """
+
+        try:
+            with self.db.engine.begin() as conn:
+                conn.execute(
+                    sa_delete(t.model_probes).where(t.model_probes.c.provider_id == provider_id)
+                )
+                result = conn.execute(
+                    sa_delete(t.provider_connections).where(
+                        t.provider_connections.c.id == provider_id
+                    )
+                )
+        except IntegrityError as exc:
+            raise ProviderInUseByAgentError(provider_id) from exc
         return bool(result.rowcount)
 
 
@@ -126,20 +292,114 @@ class ModelRepository:
 
 
 class AgentRepository:
+    """Insert-only creates and compare-and-swap updates, with a real provider binding.
+
+    Same rewrite as :class:`ProviderRepository`, plus one thing specific to agents: the provider an
+    API agent binds to is now a foreign-key column rather than a name buried in the JSON blob. That
+    makes "this agent points at a provider that no longer exists" unrepresentable instead of merely
+    unlikely.
+    """
+
     def __init__(self, database: Database) -> None:
         self.db = database
 
-    def upsert(self, agent: AgentProfile) -> None:
-        with self.db.engine.begin() as conn:
-            conn.execute(sa_delete(t.agents).where(t.agents.c.name == agent.name))
-            conn.execute(
-                insert(t.agents).values(
-                    name=agent.name,
-                    title=agent.title,
-                    runtime_type=agent.runtime.type.value,
-                    data=agent.model_dump(mode="json"),
+    def _provider_id_for(self, conn, agent: AgentProfile) -> str | None:
+        """Resolve the agent's provider *name* to an id, inside the caller's transaction.
+
+        Resolving within the transaction is the point. Looking the provider up beforehand and then
+        inserting would leave a window in which the provider is deleted between the two, which is
+        the ``provider delete || agent create`` race. Here the foreign key is evaluated against the
+        same snapshot, so one of the two operations loses cleanly.
+        """
+
+        name = agent.runtime.provider
+        if not name:
+            return None
+        row = conn.execute(
+            select(t.provider_connections.c.id).where(t.provider_connections.c.name == name)
+        ).first()
+        return str(row[0]) if row else None
+
+    def create(self, agent: AgentProfile) -> None:
+        from ..core.naming import normalize_name
+
+        try:
+            with self.db.engine.begin() as conn:
+                conn.execute(
+                    insert(t.agents).values(
+                        name=agent.name,
+                        normalized_name=normalize_name(agent.name),
+                        title=agent.title,
+                        runtime_type=agent.runtime.type.value,
+                        provider_id=self._provider_id_for(conn, agent),
+                        state_revision=0,
+                        updated_at=_now_iso(),
+                        data=agent.model_dump(mode="json"),
+                    )
                 )
-            )
+        except IntegrityError as exc:
+            raise DuplicateNameError("agent", agent.name) from exc
+
+    def update(self, agent: AgentProfile, *, expected_revision: int) -> int:
+        from ..core.naming import normalize_name
+
+        next_revision = expected_revision + 1
+        try:
+            with self.db.engine.begin() as conn:
+                result = conn.execute(
+                    update(t.agents)
+                    .where(
+                        t.agents.c.name == agent.name,
+                        t.agents.c.state_revision == expected_revision,
+                    )
+                    .values(
+                        normalized_name=normalize_name(agent.name),
+                        title=agent.title,
+                        runtime_type=agent.runtime.type.value,
+                        provider_id=self._provider_id_for(conn, agent),
+                        state_revision=next_revision,
+                        updated_at=_now_iso(),
+                        data=agent.model_dump(mode="json"),
+                    )
+                )
+        except IntegrityError as exc:
+            raise DuplicateNameError("agent", agent.name) from exc
+        if not result.rowcount:
+            raise ConcurrentModificationError("agent", agent.name)
+        return next_revision
+
+    def revision_of(self, name: str) -> int | None:
+        with self.db.engine.connect() as conn:
+            row = conn.execute(
+                select(t.agents.c.state_revision).where(t.agents.c.name == name)
+            ).first()
+        return int(row[0]) if row else None
+
+    def upsert(self, agent: AgentProfile) -> None:
+        """Create-or-replace for single-writer paths; see ``ProviderRepository.upsert``."""
+
+        from ..core.naming import normalize_name
+
+        with self.db.engine.begin() as conn:
+            values = {
+                "normalized_name": normalize_name(agent.name),
+                "title": agent.title,
+                "runtime_type": agent.runtime.type.value,
+                "provider_id": self._provider_id_for(conn, agent),
+                "updated_at": _now_iso(),
+                "data": agent.model_dump(mode="json"),
+            }
+            existing = conn.execute(
+                select(t.agents.c.state_revision).where(t.agents.c.name == agent.name)
+            ).first()
+            if existing is None:
+                conn.execute(insert(t.agents).values(name=agent.name, state_revision=0, **values))
+            else:
+                conn.execute(
+                    update(t.agents)
+                    .where(t.agents.c.name == agent.name)
+                    .values(state_revision=int(existing[0]) + 1, **values)
+                )
 
     def get(self, name: str) -> AgentProfile | None:
         with self.db.engine.connect() as conn:

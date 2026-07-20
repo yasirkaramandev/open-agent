@@ -32,6 +32,7 @@ from ..providers.discovery import (
     probe_agent_model,
 )
 from ..providers.factory import build_adapter, get_preset, resolve_base_url
+from ..storage.repositories import ProviderInUseByAgentError
 
 if TYPE_CHECKING:
     from ..app import OpenAgentApp
@@ -387,6 +388,14 @@ class ProviderService:
         Refuses (raises :class:`ProviderInUseError`) when any agent still binds to it, so a
         dependent agent is never left pointing at a missing provider. Returns ``False`` when the
         provider does not exist.
+
+        The dependents lookup below is now for the **error message**, not for the decision. The
+        decision belongs to the foreign key, which is evaluated inside the delete's own
+        transaction: listing agents and then deleting leaves a window in which another process
+        creates an agent bound to this provider, and that agent would have outlived it. When the
+        constraint refuses, the raised ``ProviderInUseError`` names whichever dependents are
+        visible — possibly none, if the winning agent was created after this list was read, which
+        is precisely the race being closed.
         """
 
         provider = self.get(name)
@@ -406,7 +415,12 @@ class ProviderService:
         # re-add under the same name reuses it. The credential revision would reject the inherited
         # rows anyway; deleting them keeps the store from accumulating verdicts for a connection
         # that no longer exists (spec §22).
-        self.repos.providers.delete_with_probes(provider.id)
+        try:
+            self.repos.providers.delete_with_probes(provider.id)
+        except ProviderInUseByAgentError as exc:
+            # The constraint caught a dependent this transaction could not see when it started.
+            operation.complete()
+            raise ProviderInUseError(name, self.agents_using(name)) from exc
         operation.advance("db_deleted")
         if provider.credential.type is CredentialType.KEYCHAIN:
             self.credentials.delete_secret(provider.credential, strict=True)
