@@ -2,16 +2,51 @@
 
 The SQLite DB is the source of truth; ``OPENAGENT.md`` is generated from it. The agent list lives
 between two markers so regeneration never disturbs hand-written prose around it.
+
+Two things this module has to get right, because the file is jointly owned: OpenAgent writes the
+block between the markers, and the user writes everything else. Losing the user's half is not
+recoverable from the database.
+
+**Concurrency.** ``atomic_write_text`` guarantees the file is never observed half-written, which is
+durability, not concurrency. Two processes that each read, regenerate, and replace will still lose
+one of the two edits — the second ``os.replace`` simply wins. Regeneration therefore happens under
+a cross-process lock, and the file is re-checked after the new content is built: if it changed
+while we were working, the write is abandoned rather than applied over a stale read.
+
+**Malformed markers.** The previous implementation fell back to rendering a fresh document whenever
+it could not find both markers. A file with a ``BEGIN`` but no ``END`` — a truncated write, a bad
+merge resolution, a hand-edit — took that path, and the fallback replaced the *entire* file,
+deleting every line of hand-written prose. That case is now a refusal: ``OpenAgentMdConflict`` names
+the problem and the user decides.
 """
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 from pathlib import Path
 
 from ..config import OPENAGENT_MD_END, OPENAGENT_MD_START
 from ..core.models import AgentProfile
 from ..security.atomic import atomic_write_text
+from ..security.file_lock import LockTimeout, file_lock
+
+
+class OpenAgentMdConflict(RuntimeError):
+    """The document is not in a shape that can be regenerated without guessing.
+
+    Always actionable and never destructive: nothing is written when this is raised.
+    """
+
+    def __init__(self, path: Path, reason: str) -> None:
+        self.path = path
+        self.reason = reason
+        super().__init__(
+            f"{path} cannot be regenerated safely: {reason}. "
+            f"Run `openagent agent sync-document --dry-run` to see the document OpenAgent would "
+            f"write, then fix the markers or replace the file yourself."
+        )
+
 
 _HEADER = """\
 # OpenAgent
@@ -79,25 +114,114 @@ def render_document(agents: Sequence[AgentProfile]) -> str:
     return f"{_HEADER}\n{render_agents_block(agents)}"
 
 
-def write_openagent_md(path: Path, agents: Sequence[AgentProfile]) -> None:
-    """Create or update ``OPENAGENT.md`` in place, preserving prose outside the markers.
+#: How long to wait for another process to finish regenerating the document. Generous, because the
+#: work is milliseconds and a wait means someone genuinely holds it; bounded, because a crashed
+#: holder's lock is already released by the OS and we must never wait forever on a live one.
+DOCUMENT_LOCK_TIMEOUT = 30.0
 
-    The write is **atomic** (temp file + ``os.replace``): a failure mid-write never leaves a
-    half-updated document, and the previous content survives if the write fails. Only the block
-    between the two markers is regenerated; hand-written prose outside them is preserved.
+
+def document_lock_path(path: Path) -> Path:
+    """The lock guarding ``path``. Kept beside the project, not in a shared temp directory."""
+
+    return path.parent / ".openagent" / "locks" / "openagent-md.lock"
+
+
+def _preimage(path: Path) -> tuple[int, int, str] | None:
+    """(size, mtime_ns, sha256) of ``path``, or None when it does not exist.
+
+    ``lstat``, not ``stat``: a symlink must be detected as a symlink rather than followed, or a
+    regenerate would write through it to a target the user never nominated.
+    """
+
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return (info.st_size, info.st_mtime_ns, digest)
+
+
+def plan_openagent_md(path: Path, agents: Sequence[AgentProfile]) -> str:
+    """The content that would be written, or raise :class:`OpenAgentMdConflict`.
+
+    Separated from the write so ``--dry-run`` shows exactly what would land, and so the conflict
+    rules are stated once rather than duplicated between preview and apply.
     """
 
     block = render_agents_block(agents)
-    content: str | None = None
-    if path.exists():
+    if not path.exists():
+        return render_document(agents)
+
+    if path.is_symlink():
+        raise OpenAgentMdConflict(path, "it is a symlink, and OpenAgent will not write through one")
+
+    try:
         text = path.read_text(encoding="utf-8")
-        if OPENAGENT_MD_START in text and OPENAGENT_MD_END in text:
-            before = text.split(OPENAGENT_MD_START)[0]
-            after = text.split(OPENAGENT_MD_END, 1)[1]
-            content = before + block + after
-    if content is None:
-        content = render_document(agents)
-    atomic_write_text(path, content, mode=0o600)
+    except UnicodeDecodeError as exc:
+        raise OpenAgentMdConflict(path, "it is not valid UTF-8") from exc
+
+    starts = text.count(OPENAGENT_MD_START)
+    ends = text.count(OPENAGENT_MD_END)
+
+    if starts == 0 and ends == 0:
+        # A document with prose but no generated block yet: append rather than replace, so a user
+        # who deleted the block (or wrote the file themselves) keeps everything they wrote.
+        separator = "" if text.endswith("\n\n") else ("\n" if text.endswith("\n") else "\n\n")
+        return f"{text}{separator}{block}"
+
+    # Every remaining shape is ambiguous. Rendering a fresh document here is what deleted users'
+    # prose before v0.1.6 — the fallback replaced the entire file.
+    if starts != 1 or ends != 1:
+        raise OpenAgentMdConflict(
+            path,
+            f"it contains {starts} start marker(s) and {ends} end marker(s); exactly one of each "
+            "is required",
+        )
+    if text.index(OPENAGENT_MD_START) > text.index(OPENAGENT_MD_END):
+        raise OpenAgentMdConflict(path, "the end marker appears before the start marker")
+
+    before = text.split(OPENAGENT_MD_START)[0]
+    after = text.split(OPENAGENT_MD_END, 1)[1]
+    return before + block + after
+
+
+def write_openagent_md(path: Path, agents: Sequence[AgentProfile]) -> None:
+    """Create or update ``OPENAGENT.md`` in place, preserving prose outside the markers.
+
+    Held under a cross-process lock, and guarded by a compare-and-swap on the file's own state: the
+    content is read, the replacement computed, and the file re-examined immediately before the
+    replace. If anything changed in between — another OpenAgent process, or the user saving in an
+    editor — the write is abandoned and retried against the new content rather than applied over a
+    stale read.
+
+    Raises :class:`OpenAgentMdConflict` when the document is in a shape that cannot be regenerated
+    without guessing. Nothing is written in that case.
+    """
+
+    lock = document_lock_path(path)
+    try:
+        with file_lock(lock, timeout=DOCUMENT_LOCK_TIMEOUT):
+            for _attempt in range(3):
+                before = _preimage(path)
+                content = plan_openagent_md(path, agents)
+                if _preimage(path) != before:
+                    # Changed while we were rendering. Rebuild against what is there now; the loop
+                    # is bounded because an unbounded retry against a file someone is actively
+                    # editing would never terminate.
+                    continue
+                atomic_write_text(path, content, mode=0o600)
+                return
+            raise OpenAgentMdConflict(
+                path, "it kept changing while OpenAgent tried to regenerate it"
+            )
+    except LockTimeout as exc:
+        raise OpenAgentMdConflict(
+            path, "another OpenAgent process is already regenerating it"
+        ) from exc
+    except OSError as exc:
+        if not isinstance(exc, FileNotFoundError):
+            raise OpenAgentMdConflict(path, f"its lock could not be taken ({exc})") from exc
+        raise
 
 
 def _runtime_label(agent: AgentProfile) -> str:

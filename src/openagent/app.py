@@ -104,7 +104,7 @@ class OpenAgentApp:
         """Finish/compensate operations interrupted after a durable journal write."""
 
         from .core.models import CredentialRef
-        from .reporting.openagent_md import write_openagent_md
+        from .reporting.openagent_md import OpenAgentMdConflict, write_openagent_md
 
         for operation in self.journal.pending():
             if operation.kind in {"provider_add", "provider_remove"}:
@@ -134,5 +134,12 @@ class OpenAgentApp:
                 operation.complete()
             elif operation.kind == "agent_document_sync":
                 path = Path(str(operation.payload["path"]))
-                write_openagent_md(path, self.repos.agents.list())
+                try:
+                    write_openagent_md(path, self.repos.agents.list())
+                except OpenAgentMdConflict:
+                    # A document the user must fix by hand must not make OpenAgent unstartable —
+                    # the interface that can fix it is the thing being blocked. The journal entry
+                    # is left pending so the sync is retried once the conflict is resolved, and
+                    # doctor reports it in the meantime.
+                    continue
                 operation.complete()

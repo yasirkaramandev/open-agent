@@ -12,10 +12,16 @@ import shutil
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from sqlalchemy import func, select
+
 from ..core.models import CliUpdateState, CredentialType, RuntimeType
 from ..credentials.store import keychain_available
 from ..providers.factory import get_preset, is_nvidia_build_endpoint
-from ..reporting.openagent_md import render_agents_block
+from ..reporting.openagent_md import (
+    OpenAgentMdConflict,
+    plan_openagent_md,
+    render_agents_block,
+)
 from ..runtimes.cli.registry import (
     cli_install_status,
     cli_registry_entries,
@@ -133,6 +139,14 @@ class DoctorService:
             checks.append(self._openagent_md_check())
         except Exception:  # noqa: BLE001
             checks.append(Check("OPENAGENT.md sync", WARN, "could not inspect project document"))
+        try:
+            checks.append(self._journal_check())
+        except Exception:  # noqa: BLE001
+            checks.append(Check("Operation journal", WARN, "could not inspect the journal"))
+        try:
+            checks.append(self._provider_agent_integrity_check())
+        except Exception:  # noqa: BLE001
+            checks.append(self._unavailable_domain_check("Provider/agent integrity"))
         return checks
 
     @staticmethod
@@ -500,6 +514,22 @@ class DoctorService:
                 WARN if agents else OK,
                 "not generated yet" if agents else "no agents to document",
             )
+
+        # A document OpenAgent refuses to regenerate is a distinct state from a stale one, and the
+        # user needs to know which: "stale" is fixed by adding an agent, a conflict is not fixed by
+        # anything except editing the file. Reporting the second as the first sends people in
+        # circles re-running commands that decline to write.
+        try:
+            plan_openagent_md(path, agents)
+        except OpenAgentMdConflict as conflict:
+            return Check(
+                "OPENAGENT.md synchronized",
+                WARN,
+                f"{conflict.reason}; OpenAgent will not overwrite it. "
+                f"Preview the replacement with `openagent agent sync-document --dry-run`",
+                data={"conflict": conflict.reason, "path": str(path)},
+            )
+
         expected = render_agents_block(agents).strip()
         synced = expected in path.read_text(encoding="utf-8")
         return Check(
@@ -507,6 +537,84 @@ class DoctorService:
             OK if synced else WARN,
             "up to date" if synced else "stale; re-run `openagent add`/`remove`",
         )
+
+    def _journal_check(self) -> Check:
+        """Pending compensating operations left behind by an interrupted write.
+
+        These are normally invisible: startup replays them. One that *stays* pending across
+        restarts means the replay itself keeps failing — most often an OPENAGENT.md conflict, which
+        recovery deliberately skips rather than letting it block startup. Without this check that
+        situation is completely silent.
+        """
+
+        pending = self.app.journal.pending()
+        if not pending:
+            return Check("Operation journal", OK, "no interrupted operations")
+        kinds: dict[str, int] = {}
+        for operation in pending:
+            kinds[operation.kind] = kinds.get(operation.kind, 0) + 1
+        summary = ", ".join(f"{kind} x{count}" for kind, count in sorted(kinds.items()))
+        return Check(
+            "Operation journal",
+            WARN,
+            f"{len(pending)} operation(s) still pending after recovery: {summary}",
+            data={"pending": len(pending), "kinds": kinds},
+        )
+
+    def _provider_agent_integrity_check(self) -> Check:
+        """Cross-check the relational binding the v0.1.6 foreign key is supposed to guarantee.
+
+        The constraint makes an orphaned binding unrepresentable *going forward*. This check exists
+        for databases that were upgraded rather than created fresh, where a pre-0012 record could
+        have been left in a shape the constraint would now reject.
+        """
+
+        from ..storage import db as tables
+
+        problems: list[str] = []
+        with self.app.db.engine.connect() as conn:
+            orphans = conn.execute(
+                select(tables.agents.c.name)
+                .select_from(
+                    tables.agents.outerjoin(
+                        tables.provider_connections,
+                        tables.agents.c.provider_id == tables.provider_connections.c.id,
+                    )
+                )
+                .where(
+                    tables.agents.c.provider_id.isnot(None),
+                    tables.provider_connections.c.id.is_(None),
+                )
+            ).all()
+            if orphans:
+                problems.append(
+                    "agents bound to a missing provider: "
+                    + ", ".join(str(row[0]) for row in orphans[:5])
+                )
+            for table, label in (
+                (tables.provider_connections, "provider"),
+                (tables.agents, "agent"),
+            ):
+                duplicates = conn.execute(
+                    select(table.c.normalized_name, func.count())
+                    .group_by(table.c.normalized_name)
+                    .having(func.count() > 1)
+                ).all()
+                if duplicates:
+                    problems.append(
+                        f"{label} names that differ only in case or Unicode form: "
+                        + ", ".join(str(row[0]) for row in duplicates[:5])
+                    )
+
+        if problems:
+            return Check(
+                "Provider/agent integrity",
+                FAIL,
+                "; ".join(problems),
+                data={"problems": problems},
+                exit_code_hint=2,
+            )
+        return Check("Provider/agent integrity", OK, "bindings and names are consistent")
 
     def _event_store_check(self) -> Check:
         issues: list[str] = []

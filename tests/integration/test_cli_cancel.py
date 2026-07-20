@@ -45,14 +45,28 @@ def fake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeCliAdapter:
     return adapter
 
 
-async def _wait_for_pid(app: OpenAgentApp, run_id: str, timeout: float = 5.0) -> int:
+async def _wait_for_pid(app: OpenAgentApp, run_id: str, timeout: float = 30.0) -> int:
+    """Wait for the run to persist its pid.
+
+    The timeout is a **safety net against hanging**, not an assertion about how fast startup is —
+    nothing here is measuring performance. It used to be 5 seconds against roughly 3.5 seconds of
+    real work (preflight, worktree creation, spawning an actual subprocess), a 1.4x margin, and the
+    test failed intermittently: measured at roughly 1 in 20 runs in isolation and more often under
+    full-suite load, with observed durations ranging from 3.4s to 4.5s.
+
+    That is a flaky release gate, and the fix is not to retry it. The condition being waited on is
+    "the pid was persisted", which either happens in well under a second or does not happen at all;
+    a generous ceiling still catches a genuine hang while leaving no room for a slow CI runner to
+    produce a false failure.
+    """
+
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
         run = app.runs.get(run_id)
         if run and run.pid:
             return run.pid
         await asyncio.sleep(0.02)
-    raise AssertionError("pid was never persisted")
+    raise AssertionError(f"pid was never persisted within {timeout}s")
 
 
 async def test_cancel_terminates_process_and_marks_cancelled(app: OpenAgentApp, fake):

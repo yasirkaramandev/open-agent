@@ -8,6 +8,7 @@ from an environment variable.
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import shlex
 import sys
@@ -1061,6 +1062,71 @@ def agent_remove(name: str = typer.Argument(...)) -> None:
         console.print(f"[green]✓[/green] removed agent {safe_markup(name)}; OPENAGENT.md updated")
     else:
         _fail(f"agent {name!r} not found")
+
+
+@agent_app.command("sync-document")
+def agent_sync_document(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show the replacement without writing anything."
+    ),
+) -> None:
+    """Regenerate OPENAGENT.md from the database.
+
+    The way out of an ``OpenAgentMdConflict``. OpenAgent refuses to regenerate a document whose
+    markers it cannot interpret, because the fallback would replace the file wholesale and the
+    user's prose exists nowhere else. This command shows exactly what would be written so the
+    conflict can be resolved deliberately rather than by guessing.
+
+    ``--dry-run`` is offered first in the error message on purpose: it is the non-destructive half,
+    and it works even when the document is in a state the writer refuses.
+    """
+
+    from ..reporting.openagent_md import (
+        OpenAgentMdConflict,
+        plan_openagent_md,
+        render_document,
+    )
+
+    oa = _app()
+    path = oa.paths.openagent_md()
+    agents = oa.agents.list()
+
+    try:
+        planned = plan_openagent_md(path, agents)
+    except OpenAgentMdConflict as conflict:
+        if not dry_run:
+            _fail(str(conflict))
+            return
+        # A dry run must still answer on a conflicted document — that is the *only* situation in
+        # which the user is told to run it. Refusing here too would send them in a circle: the
+        # error says "run --dry-run to see the replacement", and --dry-run says "there is a
+        # conflict". What is shown is the full document that would replace the file, because with
+        # unusable markers there is no in-place edit to preview.
+        console.print(f"[yellow]![/yellow] {safe_markup(conflict.reason)}", highlight=False)
+        console.print(
+            "[yellow]![/yellow] The markers cannot be used, so the whole file would be replaced "
+            "by the document below. Nothing has been written.\n",
+            highlight=False,
+        )
+        console.print(render_document(agents), markup=False, highlight=False)
+        return
+
+    if dry_run:
+        current = path.read_text(encoding="utf-8") if path.exists() else ""
+        if current == planned:
+            console.print(f"[green]✓[/green] {path} is already up to date")
+            return
+        diff = difflib.unified_diff(
+            current.splitlines(keepends=True),
+            planned.splitlines(keepends=True),
+            fromfile=f"{path} (current)",
+            tofile=f"{path} (regenerated)",
+        )
+        console.print("".join(diff), markup=False, highlight=False)
+        return
+
+    oa.agents.sync_openagent_md()
+    console.print(f"[green]✓[/green] {path} regenerated from {len(agents)} agent(s)")
 
 
 # --------------------------------------------------------------------------- helpers
