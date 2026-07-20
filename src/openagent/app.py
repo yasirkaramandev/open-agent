@@ -7,6 +7,7 @@ and MCP all go through this single object so business logic lives in one place (
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .config import KEYCHAIN_SERVICE, Paths, ensure_dirs, get_paths
 from .credentials.store import CredentialStore
@@ -14,6 +15,9 @@ from .security.journal import OperationJournal
 from .storage.db import Database
 from .storage.projects import ensure_project_marker, write_project_marker
 from .storage.repositories import Repositories
+
+if TYPE_CHECKING:
+    from .runtimes.cli.update_policy import UpdatePromptCallback
 
 
 class OpenAgentApp:
@@ -35,6 +39,12 @@ class OpenAgentApp:
         self.credentials = CredentialStore(KEYCHAIN_SERVICE)
         self.journal = OperationJournal(paths.journal_dir)
         self._recover_operations()
+        #: How to ask the user about an available CLI update under ``CliUpdatePolicy.ASK``.
+        #:
+        #: ``None`` means no interactive surface is attached — a piped shell, CI, a cron job — and
+        #: ASK degrades to NOTIFY rather than blocking on input that will never arrive. A TUI or an
+        #: interactive CLI sets this; nothing else needs to.
+        self.update_prompt: UpdatePromptCallback | None = None
         self._services: dict[str, object] = {}
 
     @classmethod

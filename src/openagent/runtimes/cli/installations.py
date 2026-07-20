@@ -38,6 +38,20 @@ def _metadata_succeeds(runner: CommandRunner, argv: list[str]) -> bool:
 
 
 def _npm_owns(cli_type: str, candidate: ExecutableCandidate, runner: CommandRunner) -> bool:
+    """Whether npm genuinely owns this executable — decided fail-closed.
+
+    Provenance is not a label, it is a decision about which updater will later be run against the
+    user's machine. Claiming NPM when npm does not own the binary means ``npm install -g pkg@latest``
+    updates a copy in some other prefix while the executable the user actually invokes stays behind
+    — and, because the update command exits 0, the whole thing is reported as a success.
+
+    The previous implementation ended with ``return not prefix or <prefix matches>``, so when
+    ``npm prefix -g`` failed — npm not installed, a permissions error, a timeout — ``prefix`` was
+    empty and the function returned **True**. Absence of evidence was treated as proof. Every step
+    now has to positively succeed, and the executable has to live under a directory npm reports as
+    its own.
+    """
+
     package = _NPM_PACKAGES.get(cli_type)
     if not package:
         return False
@@ -49,12 +63,37 @@ def _npm_owns(cli_type: str, candidate: ExecutableCandidate, runner: CommandRunn
     dependencies = payload.get("dependencies") if isinstance(payload, dict) else None
     if result.returncode != 0 or not isinstance(dependencies, dict) or package not in dependencies:
         return False
+
+    # `npm prefix -g` gives the install root (binaries land in <prefix>/bin, or directly in <prefix>
+    # on Windows); `npm root -g` gives the module directory. Either one containing this executable
+    # is positive evidence. Neither answering is not.
+    roots = [
+        _npm_path(runner, ["npm", "prefix", "-g"]),
+        _npm_path(runner, ["npm", "root", "-g"]),
+    ]
+    known_roots = [root for root in roots if root]
+    if not known_roots:
+        return False
+
+    paths = [candidate.path, candidate.resolved_path or ""]
+    for root in known_roots:
+        normalized_root = os.path.normcase(os.path.normpath(root))
+        for path in paths:
+            if path and os.path.normcase(os.path.normpath(path)).startswith(normalized_root):
+                return True
+    return False
+
+
+def _npm_path(runner: CommandRunner, argv: list[str]) -> str:
+    """One npm path query. Empty string on any failure — never a fallback to "assume yes"."""
+
     try:
-        prefix = runner(["npm", "prefix", "-g"], 5, 64 * 1024).stdout.strip()
+        result = runner(argv, 5, 64 * 1024)
     except Exception:
-        prefix = ""
-    paths = f"{candidate.path}\n{candidate.resolved_path or ''}"
-    return not prefix or os.path.normcase(prefix) in os.path.normcase(paths)
+        return ""
+    if result.returncode != 0:
+        return ""
+    return (result.stdout or "").strip().splitlines()[0].strip() if result.stdout.strip() else ""
 
 
 def detect_install_source(

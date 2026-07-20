@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ...core.models import (
@@ -23,11 +24,16 @@ from ...core.models import (
     CliUpdateStatus,
 )
 from ...security.atomic import atomic_write_text
+from ...security.file_lock import LockTimeout, file_lock
 from ...security.process import minimal_environment
 from .locator import CommandResult, CommandRunner, run_bounded
 
 CHECK_TIMEOUT_SECONDS = 15
 UPDATE_TIMEOUT_SECONDS = 180
+#: Slightly longer than one update can take, so a queued updater waits for the running one to
+#: finish rather than reporting a spurious conflict — but bounded, so a crashed holder's lock (which
+#: the OS has already dropped) never becomes an indefinite wait.
+UPDATE_LOCK_TIMEOUT = UPDATE_TIMEOUT_SECONDS + 30
 MAX_UPDATE_OUTPUT_BYTES = 2 * 1024 * 1024
 MAX_HTTP_BODY_BYTES = 2 * 1024 * 1024
 
@@ -148,19 +154,60 @@ def fetch_bytes(url: str, timeout: int, max_body_bytes: int) -> bytes:
     return bytes(body)
 
 
-def _version_tuple(value: str | None) -> tuple[int, ...] | None:
+#: A version as it appears inside a `--version` line, which is rarely just the version:
+#: "claude 1.2.3 (Claude Code)", "codex-cli 0.5.0-rc.2", "1.2.0rc1".
+#:
+#: The trailing group must accept a suffix attached with **no separator at all** (``1.2.0rc1``, PEP
+#: 440's own spelling) as well as one introduced by ``-``/``+``/``.`` (``0.5.0-rc.2``, SemVer's).
+#: An earlier version of this pattern required the separator, so ``1.2.0rc1`` matched only its
+#: ``1.2.0`` prefix — silently reintroducing the exact "a prerelease equals its release" bug this
+#: function exists to prevent. Requiring the suffix to start with an alphanumeric is what keeps the
+#: match from running into " (Claude Code)".
+_VERSION_PATTERN = re.compile(r"\d+(?:\.\d+)*(?:[-+.]?[0-9A-Za-z][0-9A-Za-z.+-]*)?")
+
+
+def parse_version(value: str | None) -> Version | None:
+    """Extract and parse a version, or None when there is nothing comparable.
+
+    The previous implementation was ``re.search(r"\\d+(?:\\.\\d+)+")`` followed by a tuple compare
+    of the integer components. That silently discarded prerelease and build metadata, so ``1.2.0``
+    and ``1.2.0rc1`` parsed to the same tuple and compared **equal** — meaning an installed release
+    candidate was reported as already current, and an update to the real release never happened.
+
+    PEP 440 ordering (via ``packaging``) is not something to re-derive locally: it has to know that
+    ``1.2.0rc1 < 1.2.0``, that ``1.2.0.post1 > 1.2.0``, and that build metadata does not affect
+    ordering. Versions that are not PEP 440 (some CLIs ship SemVer with a ``-rc.2`` suffix) are
+    normalised where possible and reported as unparseable otherwise — never silently equal.
+    """
+
     if not value:
         return None
-    match = re.search(r"\d+(?:\.\d+)+", value)
-    return tuple(int(part) for part in match.group(0).split(".")) if match else None
+    match = _VERSION_PATTERN.search(value)
+    if not match:
+        return None
+    raw = match.group(0).rstrip(".-+")
+    try:
+        return Version(raw)
+    except InvalidVersion:
+        # SemVer prerelease syntax ("0.5.0-rc.2") is not PEP 440 but is unambiguous; normalising the
+        # separator is a mechanical translation, not a guess about intent.
+        try:
+            return Version(raw.replace("-", ""))
+        except InvalidVersion:
+            return None
 
 
 def _is_newer(latest: str | None, current: str | None) -> bool | None:
-    left, right = _version_tuple(latest), _version_tuple(current)
+    """Whether ``latest`` is strictly newer. ``None`` means "could not be determined".
+
+    The three-valued return matters: callers must not treat "unparseable" as "up to date". That
+    conflation is what let a failed update report success.
+    """
+
+    left, right = parse_version(latest), parse_version(current)
     if left is None or right is None:
         return None
-    width = max(len(left), len(right))
-    return left + (0,) * (width - len(left)) > right + (0,) * (width - len(right))
+    return left > right
 
 
 def _json_command(
@@ -473,6 +520,72 @@ def _materialize_official_installer(
     return [str(target) if argument == placeholder else argument for argument in argv]
 
 
+def _verification_failed(
+    status: CliUpdateStatus,
+    argv: list[str],
+    reason: str,
+    *,
+    current_version: str | None = None,
+) -> UpdateExecutionResult:
+    """An update that cannot be proven to have worked is a failure, not an unknown.
+
+    ``CHECK_FAILED`` rather than ``UNKNOWN`` on purpose. ``UNKNOWN`` is a legitimate *check* result
+    ("this install source has no version endpoint") and callers treat it as non-fatal. After an
+    update has actually run, "I cannot tell whether it worked" is a failure: the user asked for a
+    specific outcome and there is no evidence it happened.
+    """
+
+    update: dict[str, Any] = {
+        "state": CliUpdateState.CHECK_FAILED,
+        "detail": f"update verification failed: {reason}",
+    }
+    if current_version:
+        update["current_version"] = current_version
+    revised = status.model_copy(update=update)
+    return UpdateExecutionResult(status=revised, command=argv, ran=True, detail=revised.detail)
+
+
+def _verify_active_identity(installation: CliInstallation) -> str | None:
+    """Re-check that the executable OpenAgent will invoke still exists after the update.
+
+    Returns a human-readable problem, or None when the identity holds.
+
+    The failure this guards against is real: a package manager can install into a prefix that is
+    not the one holding the active binary, or a native installer can remove the old binary and
+    write the new one elsewhere. Either way the update command exits 0 while the path OpenAgent is
+    about to run has gone.
+
+    Deliberately **not** checked here: whether the bare name still resolves on PATH. OpenAgent
+    locates CLIs that are not on PATH at all (``find_executable`` searches ``~/.local/bin``) and
+    always invokes them by absolute path, so requiring PATH resolution would reject working
+    installations. A PATH that resolves the name to a *different* binary is a separate condition
+    with its own handling — ``installation.shadowed_executables``, checked before the update runs.
+    """
+
+    active = Path(installation.executable)
+    if not active.exists():
+        return f"the active executable {active} no longer exists after the update"
+
+    recorded = installation.resolved_executable
+    if recorded and recorded != installation.executable:
+        try:
+            if not Path(recorded).exists():
+                return (
+                    f"the recorded installation {recorded} no longer exists; "
+                    "the update wrote somewhere else"
+                )
+        except OSError:  # pragma: no cover - filesystem dependent
+            return "the recorded installation path could not be inspected after the update"
+    return None
+
+
+def update_lock_path(cli_type: str, locks_dir: Path | None = None) -> Path:
+    """Where the cross-process update lock for ``cli_type`` lives."""
+
+    root = locks_dir or (Path.home() / ".openagent" / "locks")
+    return root / f"cli-update-{cli_type}.lock"
+
+
 def perform_update(
     installation: CliInstallation,
     status: CliUpdateStatus,
@@ -481,13 +594,63 @@ def perform_update(
     dry_run: bool = False,
     runner: CommandRunner = run_network_bounded,
     installer_fetcher: BytesFetcher = fetch_bytes,
+    locks_dir: Path | None = None,
+    lock_timeout: float = UPDATE_LOCK_TIMEOUT,
 ) -> UpdateExecutionResult:
-    """Execute only a source-matched, non-elevated update and verify the exact active binary."""
+    """Execute only a source-matched, non-elevated update and verify the exact active binary.
+
+    Held under a cross-process lock for the duration. Two OpenAgent processes updating the same CLI
+    concurrently is not hypothetical — a TUI session and a `openagent cli update` in another
+    terminal is enough — and two package managers rewriting the same binary interleave into a
+    corrupt install that neither one reports as failed.
+    """
 
     def blocked(detail: str) -> UpdateExecutionResult:
         revised = status.model_copy(update={"state": CliUpdateState.BLOCKED, "detail": detail})
         return UpdateExecutionResult(status=revised, detail=detail)
 
+    # Taken before any of the eligibility checks so the decision and the action cannot be split by
+    # another updater. A dry run changes nothing and does not need it.
+    if dry_run:
+        return _perform_update_locked(
+            installation,
+            status,
+            active_run_ids=active_run_ids,
+            dry_run=True,
+            runner=runner,
+            installer_fetcher=installer_fetcher,
+            blocked=blocked,
+        )
+    try:
+        with file_lock(update_lock_path(installation.type, locks_dir), timeout=lock_timeout):
+            return _perform_update_locked(
+                installation,
+                status,
+                active_run_ids=active_run_ids,
+                dry_run=False,
+                runner=runner,
+                installer_fetcher=installer_fetcher,
+                blocked=blocked,
+            )
+    except LockTimeout:
+        return blocked(
+            f"another OpenAgent process is already updating {installation.type}; "
+            "no second updater was started"
+        )
+    except OSError as exc:
+        return blocked(f"the update lock could not be taken ({exc}); refusing to update")
+
+
+def _perform_update_locked(
+    installation: CliInstallation,
+    status: CliUpdateStatus,
+    *,
+    active_run_ids: Sequence[str],
+    dry_run: bool,
+    runner: CommandRunner,
+    installer_fetcher: BytesFetcher,
+    blocked: Callable[[str], UpdateExecutionResult],
+) -> UpdateExecutionResult:
     if active_run_ids:
         return blocked(f"CLI is used by active run(s): {', '.join(active_run_ids[:5])}")
     if installation.shadowed_executables:
@@ -555,14 +718,25 @@ def perform_update(
             return UpdateExecutionResult(
                 status=failed, command=argv, ran=True, detail=failed.detail
             )
+        # The updater's exit code says the *command* succeeded. It says nothing about whether the
+        # binary this process will actually invoke changed — a package manager can update a copy in
+        # a different prefix, leave a shim pointing at the old build, or write a new version that
+        # PATH does not resolve to. Everything below re-establishes that from scratch.
+        identity_problem = _verify_active_identity(installation)
+        if identity_problem:
+            return _verification_failed(status, argv, identity_problem)
+
         verified = runner(
             [installation.executable, "--version"],
             CHECK_TIMEOUT_SECONDS,
             64 * 1024,
         )
-        version = (verified.stdout or verified.stderr).strip().splitlines()[0]
+        raw_version = (verified.stdout or verified.stderr).strip()
+        version = raw_version.splitlines()[0] if raw_version else ""
         if verified.returncode != 0 or not version:
-            raise RuntimeError("updated executable failed --version verification")
+            return _verification_failed(
+                status, argv, "the updated executable did not answer --version"
+            )
         if installation.type == "antigravity":
             models = runner(
                 [installation.executable, "models"],
@@ -570,16 +744,36 @@ def perform_update(
                 MAX_UPDATE_OUTPUT_BYTES,
             )
             if models.returncode != 0:
-                raise RuntimeError(
-                    "updated Antigravity executable failed authenticated model-surface verification"
+                return _verification_failed(
+                    status,
+                    argv,
+                    "the updated Antigravity executable failed its model-surface check",
                 )
+
         available = _is_newer(status.latest_version, version)
-        state = CliUpdateState.CURRENT if available is False else CliUpdateState.UNKNOWN
-        detail = f"updated and verified exact executable: {version}"
+        # An update that leaves the active version older than the one we set out to install has not
+        # succeeded, and neither has one whose result cannot be compared. Both used to be reported
+        # as a successful run with state UNKNOWN, so `openagent cli update` exited 0 and the TUI
+        # showed no error while the old binary stayed in place.
         if available is True:
-            detail += (
-                f"; expected latest {status.latest_version}, but active version is still older"
+            return _verification_failed(
+                status,
+                argv,
+                f"still running {version} after updating; expected at least "
+                f"{status.latest_version}",
+                current_version=version,
             )
+        if available is None and status.latest_version:
+            return _verification_failed(
+                status,
+                argv,
+                f"cannot confirm the update: installed version {version!r} and expected "
+                f"{status.latest_version!r} are not comparable",
+                current_version=version,
+            )
+
+        state = CliUpdateState.CURRENT
+        detail = f"updated and verified exact executable: {version}"
         revised = status.model_copy(
             update={
                 "current_version": version,

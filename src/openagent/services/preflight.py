@@ -41,6 +41,11 @@ from ..providers.factory import build_adapter, resolve_base_url
 from ..runtimes.cli.antigravity import AntigravityAdapter
 from ..runtimes.cli.locator import locate_candidates, run_bounded
 from ..runtimes.cli.registry import build_cli_adapter, known_cli_types
+from ..runtimes.cli.update_policy import (
+    UpdateChoice,
+    UpdatePromptSuppressions,
+    decide_update,
+)
 from ..runtimes.cli.updates import cache_valid
 
 if TYPE_CHECKING:
@@ -366,10 +371,71 @@ class PreflightService:
                 mandatory=False,
             )
             return
+
+        if config.policy is CliUpdatePolicy.ASK:
+            await self._ask_about_update(report, cli_type, current, status, run_id=run_id)
+            return
+
         report.add(
             "CLI update available",
             False,
             f"{status.detail}; policy={config.policy.value}. Use `openagent cli update {cli_type}`",
+            mandatory=False,
+        )
+
+    async def _ask_about_update(
+        self,
+        report: PreflightReport,
+        cli_type: str,
+        installation: CliInstallation,
+        status: CliUpdateState | object,
+        *,
+        run_id: str | None,
+    ) -> None:
+        """The ASK branch, which before v0.1.5 did not exist.
+
+        ``ASK`` is the *default* policy, and it fell through to the same warning line as ``NOTIFY``:
+        a user who chose "ask me before updating" was never asked and had no way to tell.
+
+        Cancelling the run is the only outcome that blocks, and it does so because the user
+        explicitly asked for it.
+        """
+
+        decision = decide_update(
+            installation,
+            status,  # type: ignore[arg-type]
+            callback=self.app.update_prompt,
+            suppressions=UpdatePromptSuppressions(
+                self.app.paths.config_dir / "update-prompts.json"
+            ),
+        )
+
+        if decision.choice is UpdateChoice.CANCEL_RUN:
+            report.add(
+                "CLI update",
+                False,
+                f"cancelled: you chose not to run {cli_type} until it is updated",
+                error_type="cli_update_declined",
+            )
+            return
+
+        if decision.choice is UpdateChoice.UPDATE_NOW:
+            result = await self.app.clis.update(
+                cli_type,
+                exclude_run_ids=([run_id] if run_id else []),
+            )
+            report.add(
+                "CLI update",
+                result.status.state not in {CliUpdateState.BLOCKED, CliUpdateState.CHECK_FAILED},
+                result.detail or result.status.detail,
+                mandatory=False,
+            )
+            return
+
+        report.add(
+            "CLI update available",
+            True,
+            decision.detail or f"continuing without updating {cli_type}",
             mandatory=False,
         )
 
