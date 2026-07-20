@@ -57,6 +57,18 @@ class SelfUpdatePlan(BaseModel):
     checkout_root: str | None = None
     local_revision: str | None = None
     remote_revision: str | None = None
+    #: For a source checkout: the version the checkout's source tree declares. This is distinct from
+    #: ``current_version`` (the version the *active binary* reports) because a non-editable install
+    #: is a copy — the checkout can move ahead of the copy that is actually on PATH (spec §3).
+    source_version: str | None = None
+    #: The checkout's HEAD is behind official ``origin/main``.
+    revision_update_available: bool = False
+    #: The active binary's version differs from the source checkout's declared version — the copy on
+    #: PATH is stale even though the checkout may be current.
+    installation_drift: bool = False
+    #: The platform installer must run to reconcile the active binary with the source, whether that
+    #: is because of a revision change, version drift, or an explicit repair request (spec §3).
+    needs_reinstall: bool = False
     detail: str = ""
 
 
@@ -233,6 +245,7 @@ def _source_plan(
     active: Path,
     runner: SelfUpdateRunner,
     platform: str,
+    repair: bool = False,
 ) -> SelfUpdatePlan:
     setup_name = "setup.ps1" if platform.startswith("win") else "setup.sh"
     setup = root / setup_name
@@ -308,6 +321,19 @@ def _source_plan(
             detail="could not verify the official origin/main revision",
         )
 
+    # A source checkout that cannot state its own version cannot be reconciled against the active
+    # binary. Fail closed rather than guessing the checkout is current (spec §3).
+    source_version = _source_version(root)
+    if source_version is None or canonical_version(source_version) is None:
+        return _blocked_plan(
+            current_version=current_version,
+            active=active,
+            source="source-checkout",
+            method="git-origin-main",
+            checkout_root=root,
+            detail="source checkout does not declare a parseable OpenAgent version",
+        )
+
     if platform.startswith("win"):
         command = [
             "powershell.exe",
@@ -319,27 +345,59 @@ def _source_plan(
         ]
     else:
         command = ["sh", str(setup)]
-    available = local != remote
+
+    # Two independent axes decide whether an update is needed (spec §3). A checkout that is level
+    # with origin/main can still be serving an old binary, because a non-editable install is a copy
+    # of the source, not the source itself.
+    revision_update_available = local != remote
+    active_canonical = canonical_version(current_version)
+    source_canonical = canonical_version(source_version)
+    if active_canonical is None:
+        # We cannot prove the active binary is current, so we must not assume it is (Case E). Treat
+        # an unreadable/unparseable active version as drift and reinstall.
+        installation_drift = True
+    else:
+        installation_drift = active_canonical != source_canonical
+    needs_reinstall = revision_update_available or installation_drift or repair
+    update_available = needs_reinstall
+
+    commands: list[list[str]] = []
+    if revision_update_available:
+        # Only fast-forward when the checkout is actually behind. When it is level with origin/main
+        # but the binary is stale, the pull would be a no-op; the reinstall is what repairs it.
+        commands.append(["git", "-C", str(root), "pull", "--ff-only", "origin", "main"])
+    commands.append(command)
+
+    if revision_update_available:
+        detail = f"official main has a newer revision ({local[:12]} -> {remote[:12]})"
+    elif repair and not installation_drift:
+        detail = f"reinstalling {source_canonical} from the current checkout on request"
+    elif installation_drift:
+        detail = (
+            f"installed binary reports {current_version} but the checkout is {source_version}; "
+            "reinstalling from source"
+        )
+    else:
+        detail = f"current at official main revision {local[:12]} ({source_canonical})"
+
     return SelfUpdatePlan(
         current_version=current_version,
+        latest_version=source_version,
         source="source-checkout",
         active_executable=str(active),
         resolved_executable=str(_resolved(active)),
         check_method="git-origin-main",
-        update_available=available,
+        update_available=update_available,
         can_update=True,
-        commands=[
-            ["git", "-C", str(root), "pull", "--ff-only", "origin", "main"],
-            command,
-        ],
+        commands=commands,
         checkout_root=str(root),
         local_revision=local,
         remote_revision=remote,
-        detail=(
-            f"official main has a newer revision ({local[:12]} -> {remote[:12]})"
-            if available
-            else f"current at official main revision {local[:12]}"
-        ),
+        source_version=source_version,
+        revision_update_available=revision_update_available,
+        installation_drift=installation_drift,
+        needs_reinstall=needs_reinstall,
+        detail=detail,
     )
 
 
@@ -456,11 +514,16 @@ def check_self_update(
     fetcher: JsonFetcher = fetch_json,
     environ: Mapping[str, str] | None = None,
     platform: str | None = None,
+    repair: bool = False,
 ) -> SelfUpdatePlan:
     """Resolve provenance and check only the matching official update source.
 
     ``direct_url=False`` means "read installed metadata"; tests can pass ``None`` to explicitly
     model an index-installed wheel.
+
+    ``repair`` forces a reinstall from the proven source even when versions already match, but only
+    when provenance is safe. For an index install we cannot prove this repository owns the published
+    distribution, so ``repair`` fails closed and points at the source-checkout path (spec §3, §20).
     """
 
     active = _active_executable(active_executable)
@@ -481,6 +544,7 @@ def check_self_update(
             active=active,
             runner=runner,
             platform=sys.platform if platform is None else platform,
+            repair=repair,
         )
     if payload is not None:
         return _blocked_plan(
@@ -489,6 +553,17 @@ def check_self_update(
             source="unsupported",
             method="direct-url",
             detail="remote or malformed direct-URL installs cannot be updated safely in place",
+        )
+    if repair:
+        return _blocked_plan(
+            current_version=current_version,
+            active=active,
+            source="unsupported",
+            method="repair",
+            detail=(
+                "official index distribution could not be verified; use the proven "
+                "source-checkout repair path"
+            ),
         )
 
     environment = dict(os.environ if environ is None else environ)

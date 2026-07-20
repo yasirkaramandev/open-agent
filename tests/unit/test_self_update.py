@@ -22,6 +22,17 @@ def _active(path: Path) -> Path:
     return path
 
 
+def _source_checkout(root: Path, *, version: str = "0.1.4") -> Path:
+    """A source checkout that declares ``version`` in the same layout the real tree uses."""
+
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "setup.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    pkg = root / "src" / "openagent"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "__init__.py").write_text(f'__version__ = "{version}"\n', encoding="utf-8")
+    return root
+
+
 def _result(returncode: int = 0, stdout: str = "", stderr: str = "") -> CommandResult:
     return CommandResult(returncode=returncode, stdout=stdout, stderr=stderr)
 
@@ -105,9 +116,7 @@ def _git_runner(
 
 
 def test_official_clean_source_checkout_fast_forwards_and_reinstalls(tmp_path: Path) -> None:
-    root = tmp_path / "Open Agent Source"
-    root.mkdir()
-    (root / "setup.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    root = _source_checkout(tmp_path / "Open Agent Source", version="0.1.4")
     active = _active(tmp_path / "tool" / "openagent")
 
     plan = check_self_update(
@@ -121,6 +130,7 @@ def test_official_clean_source_checkout_fast_forwards_and_reinstalls(tmp_path: P
     assert plan.source == "source-checkout"
     assert plan.can_update is True
     assert plan.update_available is True
+    assert plan.revision_update_available is True
     assert plan.commands[0][-4:] == ["pull", "--ff-only", "origin", "main"]
     assert plan.commands[1] == ["sh", str(root / "setup.sh")]
 
@@ -163,6 +173,177 @@ def test_source_update_rejects_unencrypted_official_origin(tmp_path: Path) -> No
 
     assert plan.can_update is False
     assert "official" in plan.detail
+
+
+# ---------------------------------------------------------------- installation drift (spec §3)
+
+
+def _current_checkout_plan(
+    tmp_path: Path,
+    *,
+    binary_version: str,
+    source_version: str,
+    repair: bool = False,
+) -> SelfUpdatePlan:
+    """A source checkout whose HEAD is level with origin/main (local SHA == remote SHA)."""
+
+    root = _source_checkout(tmp_path / "checkout", version=source_version)
+    active = _active(tmp_path / "tool" / "openagent")
+    return check_self_update(
+        current_version=binary_version,
+        active_executable=str(active),
+        direct_url={"url": root.as_uri(), "dir_info": {}},
+        runner=_git_runner(root, head_after_pull="b" * 40),  # HEAD == ls-remote "b"*40
+        platform="linux",
+        repair=repair,
+    )
+
+
+def test_source_checkout_reinstalls_when_head_is_current_but_binary_is_old(tmp_path: Path) -> None:
+    """The reported bug: checkout is current, but the binary on PATH is a stale copy."""
+
+    plan = _current_checkout_plan(tmp_path, binary_version="0.1.4", source_version="0.1.6rc2")
+
+    assert plan.can_update is True
+    assert plan.update_available is True
+    assert plan.installation_drift is True
+    assert plan.revision_update_available is False
+    assert plan.needs_reinstall is True
+    # The installer runs; there is no fast-forward because the checkout is already current.
+    assert plan.commands == [["sh", str(Path(plan.checkout_root) / "setup.sh")]]
+    assert not any(cmd[-4:] == ["pull", "--ff-only", "origin", "main"] for cmd in plan.commands)
+
+
+def test_source_checkout_is_current_only_when_head_and_binary_both_match(tmp_path: Path) -> None:
+    plan = _current_checkout_plan(tmp_path, binary_version="0.1.6rc2", source_version="0.1.6rc2")
+
+    assert plan.can_update is True
+    assert plan.update_available is False
+    assert plan.needs_reinstall is False
+    assert plan.installation_drift is False
+    assert plan.revision_update_available is False
+
+
+def test_source_checkout_reinstalls_when_active_version_is_unparseable(tmp_path: Path) -> None:
+    """Case E: an unreadable active version must not be assumed current."""
+
+    plan = _current_checkout_plan(
+        tmp_path, binary_version="dev-build-unknown", source_version="0.1.6rc2"
+    )
+
+    assert plan.installation_drift is True
+    assert plan.needs_reinstall is True
+    assert plan.update_available is True
+
+
+def test_source_checkout_update_reports_installation_drift(tmp_path: Path) -> None:
+    plan = _current_checkout_plan(tmp_path, binary_version="0.1.4", source_version="0.1.6rc2")
+
+    assert plan.source_version == "0.1.6rc2"
+    assert plan.installation_drift is True
+    assert "0.1.4" in plan.detail and "0.1.6rc2" in plan.detail
+
+
+def test_source_checkout_without_parseable_source_version_is_blocked(tmp_path: Path) -> None:
+    root = tmp_path / "checkout"
+    root.mkdir()
+    (root / "setup.sh").write_text("#!/bin/sh\n", encoding="utf-8")  # no src/openagent/__init__.py
+    active = _active(tmp_path / "tool" / "openagent")
+
+    plan = check_self_update(
+        current_version="0.1.4",
+        active_executable=str(active),
+        direct_url={"url": root.as_uri(), "dir_info": {}},
+        runner=_git_runner(root, head_after_pull="b" * 40),
+        platform="linux",
+    )
+
+    assert plan.can_update is False
+    assert "parseable OpenAgent version" in plan.detail
+
+
+def test_source_checkout_repair_runs_installer_without_remote_revision_change(
+    tmp_path: Path,
+) -> None:
+    """--repair reinstalls even when the version already matches, with no fast-forward."""
+
+    plan = _current_checkout_plan(
+        tmp_path, binary_version="0.1.6rc2", source_version="0.1.6rc2", repair=True
+    )
+
+    assert plan.can_update is True
+    assert plan.update_available is True
+    assert plan.needs_reinstall is True
+    assert plan.revision_update_available is False
+    assert plan.commands == [["sh", str(Path(plan.checkout_root) / "setup.sh")]]
+
+
+def test_source_checkout_repair_verifies_exact_active_binary(tmp_path: Path) -> None:
+    """A repair plan runs through perform_self_update and verifies the exact active binary."""
+
+    plan = _current_checkout_plan(
+        tmp_path, binary_version="0.1.4", source_version="0.1.6rc2", repair=True
+    )
+    root = Path(plan.checkout_root)
+    active = Path(plan.active_executable)
+
+    def runner(argv, timeout, limit, env, cwd):
+        del timeout, limit, env
+        tail = list(argv[3:]) if argv[0] == "git" else []
+        if argv[0] == "sh":  # the installer
+            return _result()
+        if tail == ["rev-parse", "HEAD"]:
+            assert cwd == root
+            return _result(stdout=f"{'b' * 40}\n")  # HEAD already at the verified remote revision
+        if argv[1:] == ["version"]:
+            return _result(stdout="openagent 0.1.6rc2\n")
+        if argv[1:] == ["doctor", "--json"]:
+            return _result(returncode=0, stdout=json.dumps({"checks": [], "exit_code": 0}))
+        raise AssertionError(argv)
+
+    result = perform_self_update(plan, runner=runner, resolver=lambda _name: str(active))
+
+    assert result.ok is True
+    assert result.ran is True
+    assert result.verified_version == "0.1.6rc2"
+
+
+def test_cli_update_does_not_return_early_when_installation_drift_exists(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`openagent update --yes` must actually reinstall a drifted binary, not report 'current'."""
+
+    active = _active(tmp_path / "tool" / "openagent")
+    plan = SelfUpdatePlan(
+        current_version="0.1.4",
+        latest_version="0.1.6rc2",
+        source="source-checkout",
+        active_executable=str(active),
+        resolved_executable=str(active.resolve()),
+        check_method="git-origin-main",
+        update_available=True,
+        can_update=True,
+        commands=[["sh", "setup.sh"]],
+        checkout_root=str(tmp_path / "checkout"),
+        source_version="0.1.6rc2",
+        installation_drift=True,
+        needs_reinstall=True,
+        detail="installed binary reports 0.1.4 but the checkout is 0.1.6rc2",
+    )
+    performed: list[SelfUpdatePlan] = []
+
+    def fake_perform(passed_plan, **_kwargs):
+        performed.append(passed_plan)
+        return SelfUpdateResult(plan=passed_plan, ok=True, ran=True, verified_version="0.1.6rc2")
+
+    monkeypatch.setattr("openagent.services.self_update.check_self_update", lambda **_kw: plan)
+    monkeypatch.setattr("openagent.services.self_update.perform_self_update", fake_perform)
+
+    result = CliRunner().invoke(app, ["update", "--yes", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert performed, "perform_self_update was never called — the CLI returned early on drift"
+    assert performed[0].installation_drift is True
 
 
 def _index_plan(active: Path) -> SelfUpdatePlan:
@@ -275,7 +456,7 @@ def test_cli_update_dry_run_and_confirmed_json(monkeypatch, tmp_path: Path) -> N
         doctor_exit_code=0,
         detail="updated to 0.1.4",
     )
-    monkeypatch.setattr("openagent.services.self_update.check_self_update", lambda: plan)
+    monkeypatch.setattr("openagent.services.self_update.check_self_update", lambda **_kw: plan)
     monkeypatch.setattr(
         "openagent.services.self_update.perform_self_update", lambda value: completed
     )

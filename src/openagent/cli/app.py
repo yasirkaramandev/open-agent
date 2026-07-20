@@ -97,6 +97,12 @@ def update_openagent(
         False, "--dry-run", help="Show the source-matched update plan without running it."
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Confirm the update non-interactively."),
+    repair: bool = typer.Option(
+        False,
+        "--repair",
+        "--force-reinstall",
+        help="Reinstall from the proven source even if the version already matches.",
+    ),
     json_out: bool = typer.Option(False, "--json"),
 ) -> None:
     """Update OpenAgent itself from its proven installation source.
@@ -104,6 +110,9 @@ def update_openagent(
     Source checkouts fast-forward only a clean official ``origin/main`` and re-run the platform
     installer. Index installs use their owning uv/pipx environment (or that environment's exact
     Python), then the command verifies PATH, version, and ``doctor --json`` before reporting success.
+
+    ``--repair`` forces the reinstall even when the checkout and its declared version already match
+    the active binary — useful when the binary on PATH is a stale copy of a current checkout.
     """
 
     from ..services.self_update import check_self_update, perform_self_update
@@ -111,7 +120,7 @@ def update_openagent(
     if check and dry_run:
         _fail("choose at most one of --check and --dry-run")
     try:
-        plan = check_self_update()
+        plan = check_self_update(repair=repair)
     except Exception as exc:  # noqa: BLE001 - this command must remain a DB-independent repair path
         _fail(f"OpenAgent update check failed ({exc.__class__.__name__})")
 
