@@ -17,7 +17,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from ...core.events import EventType, NormalizedEvent
 from ...core.models import CliInstallation
-from ...security.process import ManagedProcess, TerminationResult
+from ...security.process import ManagedProcess, ProcessStartupError, TerminationResult
 
 #: Signature of a pure event mapper (``map_codex_event`` / ``map_claude_event``).
 EventMapper = Callable[[dict[str, Any], str], list[NormalizedEvent]]
@@ -316,7 +316,18 @@ async def run_managed_cli(
       to one.
     """
 
-    await proc.start()
+    try:
+        await proc.start()
+    except ProcessStartupError as exc:
+        # A genuine startup failure (a live child we could never identify) is a normalized run
+        # failure, not an uncaught exception that tears down the whole run loop (§5).
+        yield NormalizedEvent(
+            run_id=run_id,
+            type=EventType.RUN_FAILED,
+            source=source,
+            data={"error_type": "process_startup_failed", "message": str(exc)},
+        )
+        return
     yield NormalizedEvent(
         run_id=run_id,
         type=EventType.PROCESS_STARTED,

@@ -39,6 +39,33 @@ _STDERR_CHUNK = 8192
 #: How long to let the stderr reader finish after stdout closes, before cancelling it.
 _STDERR_DRAIN_GRACE = 5.0
 
+#: The bounded window in which an async-launched child must present a stable identity (§5). A child
+#: that completes inside this window is fine — there is nothing left to manage — but a child that is
+#: still alive at the deadline without a readable identity is terminated fail-closed.
+_STARTUP_IDENTITY_TIMEOUT = 0.25
+#: How often to re-sample identity while racing the child's exit. Kept small so a fast child's exit
+#: is noticed promptly, and off the event loop (``asyncio.to_thread``) so sampling never blocks it.
+_IDENTITY_SAMPLE_INTERVAL = 0.01
+#: How long an identity must stay unchanged before it is trusted. macOS framework Python and some
+#: launcher CLIs re-exec immediately after launch, so an eager first sample records the launcher and
+#: is then rejected as a mismatch. Requiring a stable window returns only the post-exec identity.
+_IDENTITY_STABILITY_WINDOW = 0.05
+#: Grace given to a fail-closed terminate before escalating to kill during startup.
+_STARTUP_TERMINATE_GRACE = 3.0
+
+
+class ProcessStartupError(RuntimeError):
+    """A managed subprocess could not be brought to a manageable state at startup (§5)."""
+
+
+class ProcessIdentityCaptureError(ProcessStartupError):
+    """A still-live child never presented a stable identity within the startup window (§5).
+
+    Raised only when the process is *alive* at the deadline: a child that exits before we can pin
+    its identity is a legitimate fast completion, not this error.
+    """
+
+
 #: Environment variables that are safe/necessary to inherit for a child CLI to function.
 _SAFE_ENV_KEYS = (
     "PATH",
@@ -108,6 +135,10 @@ class ManagedProcess:
         self._stdout_limit_detail = ""
         self._cancelled = False
         self._identity: ProcessIdentity | None = None
+        #: The single lifecycle wait on the child. Created once in ``start`` and shared by identity
+        #: capture, ``wait``, and startup termination, so no two call sites race their own
+        #: ``proc.wait()`` — and so a startup that fails never leaves an unobserved pending task.
+        self._wait_task: asyncio.Task[int] | None = None
 
     @property
     def pid(self) -> int | None:
@@ -139,19 +170,80 @@ class ManagedProcess:
             stdin=asyncio.subprocess.DEVNULL,
             start_new_session=not IS_WINDOWS,
         )
-        self._identity = capture_process_identity(self._proc.pid)
-        if self._identity is None:
-            # A tiny command can exit successfully before psutil takes its first sample. Yield once
-            # so asyncio's child watcher can publish that return code. An already-gone process no
-            # longer needs a kill identity; its pipes and status still belong to this Process.
-            await asyncio.sleep(0)
-            if self._proc.returncode is not None:
-                return
-            # We cannot safely manage a process whose identity we failed to capture. Stop it while
-            # we still own the asyncio handle and fail startup instead of leaving an unkillable run.
-            self._proc.terminate()
-            await self._proc.wait()
-            raise RuntimeError("could not capture backend process identity")
+        # One wait task for the whole lifecycle. Identity capture races the child's exit against it,
+        # rather than guessing from a single ``sleep(0)`` whether the return code has been published.
+        self._wait_task = asyncio.create_task(self._proc.wait())
+        self._identity = await self._capture_startup_identity()
+
+    async def _capture_startup_identity(self) -> ProcessIdentity | None:
+        """Pin a stable identity, or return ``None`` for a child that has already completed (§5).
+
+        Runs a bounded state machine that samples ``psutil`` off the event loop while watching the
+        child's own wait task:
+
+        * **child completes first** → ``None``. There is nothing left to kill; the pipes and return
+          code still belong to this process, so a fast successful command loses no output.
+        * **a stable identity appears** → return it (unchanged for a short window, so a re-exec's
+          transient launcher identity is never the one recorded).
+        * **still alive at the deadline with no identity** → terminate this exact child fail-closed
+          and raise :class:`ProcessIdentityCaptureError`; never leave a live, unmanageable process.
+        """
+
+        assert self._proc is not None and self._wait_task is not None
+        proc = self._proc
+        wait_task = self._wait_task
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _STARTUP_IDENTITY_TIMEOUT
+        last_identity: ProcessIdentity | None = None
+        stable_since: float | None = None
+
+        while loop.time() < deadline:
+            if wait_task.done():
+                return None
+            # Sampling is synchronous psutil work; keep it off the event loop so a slow /proc read
+            # never stalls every other run. Re-check the exit both sides of the sample so a PID that
+            # was reused after our child exited can never be mistaken for the child.
+            identity = await asyncio.to_thread(_capture_process_identity_once, proc.pid)
+            if wait_task.done():
+                return None
+            if identity is None:
+                await asyncio.sleep(_IDENTITY_SAMPLE_INTERVAL)
+                continue
+            if identity != last_identity:
+                last_identity = identity
+                stable_since = loop.time()
+            elif (
+                stable_since is not None
+                and loop.time() - stable_since >= _IDENTITY_STABILITY_WINDOW
+            ):
+                return identity
+            await asyncio.sleep(_IDENTITY_SAMPLE_INTERVAL)
+
+        if wait_task.done():
+            return None
+        await self._terminate_unidentified()
+        raise ProcessIdentityCaptureError(
+            "could not capture backend process identity within the startup window"
+        )
+
+    async def _terminate_unidentified(self) -> None:
+        """Terminate a still-live child we could not identify, then fully reap it (§5)."""
+
+        assert self._proc is not None and self._wait_task is not None
+        proc = self._proc
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.terminate()
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._wait_task), timeout=_STARTUP_TERMINATE_GRACE
+                )
+            except (TimeoutError, asyncio.TimeoutError):
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+        # Observe the wait task to completion so startup never leaves a pending, unawaited task.
+        with contextlib.suppress(Exception):
+            await self._wait_task
 
     async def stream_stdout(self) -> AsyncIterator[str]:
         """Yield bounded decoded stdout lines while draining stderr concurrently.
@@ -295,6 +387,11 @@ class ManagedProcess:
 
     async def wait(self) -> int:
         assert self._proc is not None
+        # Await the single lifecycle wait task rather than starting a second ``proc.wait()``; both
+        # resolve to the same return code, but sharing one task keeps startup and shutdown from
+        # racing separate waiters (§5).
+        if self._wait_task is not None:
+            return await self._wait_task
         return await self._proc.wait()
 
     async def cancel(self, grace: float = 3.0) -> TerminationResult:
