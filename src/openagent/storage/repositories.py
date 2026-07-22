@@ -12,11 +12,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, insert, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 
+from ..core.errors import DataValidationError
 from ..core.events import EventType, NormalizedEvent
 from ..core.limits import RUNTIME_LIMITS
 from ..core.models import (
@@ -71,6 +73,26 @@ class ProviderInUseByAgentError(RuntimeError):
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _decode_provider(record_id: object, data: Any) -> ProviderConnection:
+    """Decode one persisted provider, or raise a typed, redacted error (spec §7.3).
+
+    A raw ``ProviderConnection.model_validate`` is exactly what took down the dashboard: one row a
+    newer binary wrote, or a genuinely corrupt one, and the whole ``providers.list`` blew up with a
+    Pydantic traceback that also *printed the offending payload* — which can hold a credential
+    reference, header or URL. :class:`DataValidationError` names the record and the error count only,
+    so the surface can degrade cleanly and point the user at ``openagent doctor``.
+    """
+
+    try:
+        return ProviderConnection.model_validate(data)
+    except ValidationError as exc:
+        raise DataValidationError(
+            table="provider_connections",
+            record_id=str(record_id),
+            error_count=exc.error_count(),
+        ) from exc
 
 
 class ProviderRepository:
@@ -211,21 +233,57 @@ class ProviderRepository:
                     t.provider_connections.c.id == provider_id
                 )
             ).first()
-        return ProviderConnection.model_validate(row[0]) if row else None
+        return _decode_provider(provider_id, row[0]) if row else None
 
     def get_by_name(self, name: str) -> ProviderConnection | None:
         with self.db.engine.connect() as conn:
             row = conn.execute(
-                select(t.provider_connections.c.data).where(t.provider_connections.c.name == name)
+                select(t.provider_connections.c.id, t.provider_connections.c.data).where(
+                    t.provider_connections.c.name == name
+                )
             ).first()
-        return ProviderConnection.model_validate(row[0]) if row else None
+        return _decode_provider(row[0], row[1]) if row else None
 
     def list(self) -> Sequence[ProviderConnection]:
         with self.db.engine.connect() as conn:
             rows = conn.execute(
-                select(t.provider_connections.c.data).order_by(t.provider_connections.c.name)
+                select(t.provider_connections.c.id, t.provider_connections.c.data).order_by(
+                    t.provider_connections.c.name
+                )
             ).all()
-        return [ProviderConnection.model_validate(r[0]) for r in rows]
+        # A single undecodable row raises a typed, redacted error naming that record rather than a
+        # raw traceback; the good rows are unavailable until it is repaired, and doctor enumerates
+        # every bad row (spec §7.3).
+        return [_decode_provider(r[0], r[1]) for r in rows]
+
+    def decode_report(self) -> tuple[Sequence[ProviderConnection], Sequence[dict[str, object]]]:
+        """Every decodable provider plus a redacted descriptor per undecodable row (spec §7.3).
+
+        Doctor must survey a store that :meth:`list` would refuse — it reports the corrupt rows
+        instead of raising on the first one. Descriptors carry the record id and error count only,
+        never the payload.
+        """
+
+        providers: list[ProviderConnection] = []
+        errors: list[dict[str, object]] = []
+        with self.db.engine.connect() as conn:
+            rows = conn.execute(
+                select(t.provider_connections.c.id, t.provider_connections.c.data).order_by(
+                    t.provider_connections.c.name
+                )
+            ).all()
+        for record_id, data in rows:
+            try:
+                providers.append(ProviderConnection.model_validate(data))
+            except ValidationError as exc:
+                errors.append(
+                    {
+                        "table": "provider_connections",
+                        "record_id": str(record_id),
+                        "error_count": exc.error_count(),
+                    }
+                )
+        return providers, errors
 
     def delete(self, provider_id: str) -> None:
         with self.db.engine.begin() as conn:

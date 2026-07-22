@@ -430,12 +430,36 @@ class DoctorService:
         )
 
     def _provider_checks(self) -> list[Check]:
-        providers = self.app.repos.providers.list()
+        # decode_report never raises on a corrupt row (unlike list()), so doctor can survey and
+        # report an undecodable provider instead of dying with the ValidationError it exists to
+        # diagnose (spec §7.3).
+        providers, decode_errors = self.app.repos.providers.decode_report()
+        checks: list[Check] = []
+        for err in decode_errors:
+            record_id = str(err["record_id"])
+            checks.append(
+                Check(
+                    f"Provider record: {record_id}",
+                    FAIL,
+                    f"record {record_id!r} could not be decoded into the current provider model; "
+                    "no data was changed. Repair by reinstalling the current OpenAgent: "
+                    "openagent update --repair",
+                    data={
+                        "table": err["table"],
+                        "record_id": record_id,
+                        "error_category": "data_validation",
+                        "error_count": err["error_count"],
+                        "safe_repair": True,
+                        "backup_path": None,
+                    },
+                    exit_code_hint=2,
+                )
+            )
         if not providers:
+            if decode_errors:
+                return checks
             return [Check("Providers configured", WARN, "no API providers added yet")]
-        checks: list[Check] = [
-            Check("Providers configured", OK, ", ".join(p.name for p in providers))
-        ]
+        checks.append(Check("Providers configured", OK, ", ".join(p.name for p in providers)))
         for p in providers:
             if p.provider_type == "openai" and is_nvidia_build_endpoint(p.base_url):
                 checks.append(
