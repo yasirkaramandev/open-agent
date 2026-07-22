@@ -31,6 +31,16 @@ def test_provider_roundtrip(repos: Repositories):
 
 
 def test_agent_roundtrip(repos: Repositories):
+    # An API agent must bind to a provider that exists (migration 0013 + fail-closed binding).
+    repos.providers.upsert(
+        ProviderConnection(
+            id="provider_deepseek_main",
+            name="deepseek-main",
+            provider_type="deepseek",
+            protocol=Protocol.OPENAI_CHAT,
+            base_url="https://api.deepseek.com",
+        )
+    )
     agent = AgentProfile(
         name="deepseek-coder",
         title="DeepSeek Coder",

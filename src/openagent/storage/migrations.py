@@ -853,6 +853,95 @@ def _rebuild_agents(conn: Connection, normalize) -> None:
     conn.exec_driver_sql("ALTER TABLE agents_new RENAME TO agents")
 
 
+#: ``agents`` with the API-binding invariant as a named CHECK. Identical to ``_AGENTS_TARGET_DDL``
+#: plus the constraint; the shared name ``ck_agents_api_provider`` (also on db.py's metadata) is how
+#: :func:`_m013_provider_ownership_and_api_binding` recognises a table that already carries it.
+_AGENTS_TARGET_DDL_0013 = """
+CREATE TABLE agents_new (
+    name VARCHAR NOT NULL,
+    normalized_name VARCHAR NOT NULL,
+    title VARCHAR NOT NULL DEFAULT '',
+    runtime_type VARCHAR NOT NULL,
+    provider_id VARCHAR REFERENCES provider_connections (id) ON DELETE RESTRICT,
+    state_revision INTEGER NOT NULL DEFAULT 0,
+    updated_at VARCHAR NOT NULL DEFAULT '',
+    data JSON NOT NULL,
+    PRIMARY KEY (name),
+    UNIQUE (normalized_name),
+    CONSTRAINT ck_agents_api_provider
+        CHECK (runtime_type != 'api-agent' OR provider_id IS NOT NULL)
+)
+"""
+
+
+def _m013_provider_ownership_and_api_binding(conn: Connection) -> None:
+    """Make an API agent's provider binding a hard database invariant (spec §10, §19).
+
+    Migration 0012 gave ``agents`` a real ``provider_id`` foreign key, so a *dangling* binding — one
+    pointing at a provider that no longer exists — is unrepresentable. It did **not** forbid a
+    *missing* one: an API agent whose provider name could not be resolved was left with
+    ``provider_id NULL`` rather than blocking the upgrade. That is the "agent exists, provider
+    missing" state, and a run against such an agent dies later with "provider not found".
+
+    A named ``CHECK (runtime_type != 'api-agent' OR provider_id IS NOT NULL)`` removes the state. Any
+    legacy row already in it **blocks** the migration, named precisely, with the pre-migration backup
+    retained — never silently nulled, disabled or deleted, because only the user knows which provider
+    that agent was meant to bind to.
+    """
+
+    if not _table_exists(conn, "agents"):
+        return
+    table_sql = conn.exec_driver_sql(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='agents'"
+    ).scalar()
+    if table_sql and "ck_agents_api_provider" in str(table_sql):
+        # A fresh database already carries the constraint from db.py's metadata (created at 0001);
+        # only an upgraded table, rebuilt by 0012 without it, needs the rebuild.
+        return
+
+    broken = [
+        str(row[0])
+        for row in conn.exec_driver_sql(
+            "SELECT name FROM agents WHERE runtime_type='api-agent' AND ("
+            "provider_id IS NULL OR provider_id NOT IN (SELECT id FROM provider_connections))"
+        )
+    ]
+    if broken:
+        listed = ", ".join(_redacted_record_id(name) for name in sorted(broken))
+        raise MigrationVerificationError(
+            "these API agents are not bound to an existing provider, so the provider-binding "
+            f"constraint cannot be added without losing the binding: {listed}. Rebind them to a "
+            "provider (or remove them), then upgrade again. No records were changed."
+        )
+
+    from ..core.naming import normalize_name
+
+    names = [str(row[0]) for row in conn.exec_driver_sql("SELECT name FROM agents")]
+    before = set(names)
+    conn.exec_driver_sql("DROP TABLE IF EXISTS agents_new")
+    conn.exec_driver_sql(_AGENTS_TARGET_DDL_0013)
+    # Copy verbatim — unlike 0012 this only adds a constraint, so state_revision, provider_id and
+    # updated_at are preserved rather than reset.
+    for name in names:
+        conn.execute(
+            text(
+                "INSERT INTO agents_new "
+                "(name, normalized_name, title, runtime_type, provider_id, state_revision, "
+                " updated_at, data) "
+                "SELECT name, :normalized, title, runtime_type, provider_id, state_revision, "
+                " updated_at, data FROM agents WHERE name=:name"
+            ),
+            {"normalized": normalize_name(name), "name": name},
+        )
+    after = {str(row[0]) for row in conn.exec_driver_sql("SELECT name FROM agents_new")}
+    if after != before:
+        raise MigrationVerificationError(
+            f"agent rebuild would lose data: {len(before - after)} name(s) missing"
+        )
+    conn.exec_driver_sql("DROP TABLE agents")
+    conn.exec_driver_sql("ALTER TABLE agents_new RENAME TO agents")
+
+
 _FORWARD = (
     "Local user data revisions are forward-only; restoration uses the reported online backup."
 )
@@ -915,6 +1004,13 @@ MIGRATIONS: list[Migration] = [
         "0011",
         "provider and agent concurrency schema",
         _m012_provider_agent_concurrency,
+        _FORWARD,
+    ),
+    Migration(
+        "0013",
+        "0012",
+        "provider ownership and API binding",
+        _m013_provider_ownership_and_api_binding,
         _FORWARD,
     ),
 ]

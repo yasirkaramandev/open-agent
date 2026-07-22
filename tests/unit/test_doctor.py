@@ -68,15 +68,32 @@ async def test_env_credential_var_unset_is_warn(tmp_path: Path, monkeypatch: pyt
 
 
 async def test_agent_missing_provider_is_fail(tmp_path: Path):
+    import json
+
+    from sqlalchemy import text
+
     oa = _app(tmp_path)
-    # A *legacy* broken record: written straight to the repo, bypassing service validation (which
-    # now rejects a dangling provider at creation — item 7). Doctor must still flag it (item 20).
-    oa.repos.agents.upsert(
+    # An api-agent with no resolvable provider can no longer be created at all: the fail-closed
+    # binding and the migration 0013 CHECK reject it (item 7 / §10). The residual state doctor must
+    # still flag is a *stale JSON provider name* left behind an otherwise-valid relational binding —
+    # e.g. a provider renamed out from under the agent. Simulate it by corrupting only the name.
+    oa.repos.providers.create(
+        ProviderConnection(id="p_real", name="real-prov", provider_type="deepseek")
+    )
+    oa.repos.agents.create(
         AgentProfile(
             name="ghost-agent",
-            runtime=AgentRuntime(type=RuntimeType.API_AGENT, provider="does-not-exist", model="m"),
+            runtime=AgentRuntime(type=RuntimeType.API_AGENT, provider="real-prov", model="m"),
         )
     )
+    with oa.db.engine.begin() as conn:
+        raw = conn.execute(text("SELECT data FROM agents WHERE name='ghost-agent'")).scalar()
+        data = json.loads(raw) if isinstance(raw, str) else raw
+        data["runtime"]["provider"] = "does-not-exist"
+        conn.execute(
+            text("UPDATE agents SET data=:d WHERE name='ghost-agent'"), {"d": json.dumps(data)}
+        )
+
     checks = _checks_by_name(await oa.doctor.run())
     assert checks["Agent: ghost-agent"].status == FAIL
     assert "missing provider" in checks["Agent: ghost-agent"].detail

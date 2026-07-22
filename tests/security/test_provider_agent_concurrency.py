@@ -93,10 +93,11 @@ def test_duplicate_provider_name_is_refused_across_unicode_forms(repos: Reposito
 
 
 def test_duplicate_agent_name_is_refused(repos: Repositories) -> None:
-    repos.agents.create(_api_agent("coder"))
+    repos.providers.create(_provider("prov_1", "OpenAI"))
+    repos.agents.create(_api_agent("coder", "OpenAI"))
 
     with pytest.raises(DuplicateNameError):
-        repos.agents.create(_api_agent("Coder"))
+        repos.agents.create(_api_agent("Coder", "OpenAI"))
 
 
 # --------------------------------------------------------------------------- lost updates
@@ -127,17 +128,20 @@ def test_stale_provider_update_is_refused(repos: Repositories) -> None:
 
 
 def test_stale_agent_update_is_refused(repos: Repositories) -> None:
-    repos.agents.create(_api_agent("coder"))
+    repos.providers.create(_provider("prov_1", "OpenAI"))
+    repos.agents.create(_api_agent("coder", "OpenAI"))
     stale = repos.agents.revision_of("coder")
     assert stale is not None
 
     repos.agents.update(
-        _api_agent("coder").model_copy(update={"title": "First"}), expected_revision=stale
+        _api_agent("coder", "OpenAI").model_copy(update={"title": "First"}),
+        expected_revision=stale,
     )
 
     with pytest.raises(ConcurrentModificationError):
         repos.agents.update(
-            _api_agent("coder").model_copy(update={"title": "Second"}), expected_revision=stale
+            _api_agent("coder", "OpenAI").model_copy(update={"title": "Second"}),
+            expected_revision=stale,
         )
 
     survivor = repos.agents.get("coder")
@@ -147,7 +151,8 @@ def test_stale_agent_update_is_refused(repos: Repositories) -> None:
 def test_concurrent_agent_updates_produce_one_winner(repos: Repositories) -> None:
     """Two threads, one revision, a barrier so they genuinely overlap."""
 
-    repos.agents.create(_api_agent("coder"))
+    repos.providers.create(_provider("prov_1", "OpenAI"))
+    repos.agents.create(_api_agent("coder", "OpenAI"))
     revision = repos.agents.revision_of("coder")
     assert revision is not None
     barrier = Barrier(2)
@@ -156,7 +161,7 @@ def test_concurrent_agent_updates_produce_one_winner(repos: Repositories) -> Non
         barrier.wait()
         try:
             repos.agents.update(
-                _api_agent("coder").model_copy(update={"title": title}),
+                _api_agent("coder", "OpenAI").model_copy(update={"title": title}),
                 expected_revision=revision,
             )
             return "ok"

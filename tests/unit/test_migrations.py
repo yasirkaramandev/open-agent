@@ -342,7 +342,9 @@ def test_legacy_nvidia_normalization_preserves_bindings_and_invalidates_probe(tm
             name="agent-kept",
             runtime=AgentRuntime(
                 type=RuntimeType.API_AGENT,
-                provider=provider.id,
+                # Bind by provider *name* — what runtime.provider actually holds — so the relational
+                # binding resolves and survives normalization; the 0013 CHECK requires a real one.
+                provider=provider.name,
                 model="model_kept",
             ),
         )
@@ -380,7 +382,7 @@ def test_legacy_nvidia_normalization_preserves_bindings_and_invalidates_probe(tm
     assert normalized.credential == provider.credential
     assert normalized.credential_revision == provider.credential_revision
     assert upgraded_repos.models.get("model_kept").remote_model_id == "nvidia/model-kept"
-    assert upgraded_repos.agents.get("agent-kept").runtime.provider == provider.id
+    assert upgraded_repos.agents.get("agent-kept").runtime.provider == provider.name
     with upgraded.engine.connect() as conn:
         probe = conn.execute(
             text("SELECT probe_version, data FROM model_probes WHERE cache_key='probe-kept'")
@@ -640,19 +642,63 @@ def test_0012_blocks_on_case_colliding_agents(tmp_path: Path):
     assert "collide" in str(excinfo.value)
 
 
-def test_0012_leaves_a_dangling_binding_null_rather_than_blocking(tmp_path: Path):
-    """An agent naming a provider that does not exist is already broken; it must not block startup."""
+def test_0013_blocks_a_dangling_api_binding_with_backup_retained(tmp_path: Path):
+    """An API agent bound to a missing provider blocks the 0013 upgrade (spec §10.3).
+
+    0012 deliberately left such a binding NULL rather than blocking. 0013 adds the invariant that an
+    API agent must bind to a provider that exists, so it must refuse — naming the row, keeping the
+    pre-migration backup and changing nothing — never silently nulling, disabling or deleting the
+    agent, because only the user knows which provider it was meant to use.
+    """
 
     db_path = tmp_path / "orphan.db"
     _pre_0012_database(db_path, [("prov_1", "OpenAI")], [("orphan", "api-agent", "GoneProvider")])
 
-    Database.open(db_path)  # must not raise
+    with pytest.raises(MigrationFailedError) as excinfo:
+        Database.open(db_path)
+
+    assert "provider" in str(excinfo.value).lower()
+    # The pre-migration backup is retained for recovery.
+    assert excinfo.value.backup_path is not None and excinfo.value.backup_path.exists()
+    assert list(tmp_path.glob("*.bak"))
+
+    # The failed chain rolled back atomically: the orphan agent is untouched, not nulled or removed.
+    engine = create_engine(f"sqlite:///{db_path}", future=True)
+    with engine.connect() as conn:
+        names = {r[0] for r in conn.exec_driver_sql("SELECT name FROM agents")}
+    engine.dispose()
+    assert "orphan" in names
+
+
+def test_0013_enforces_api_provider_check_after_upgrade(tmp_path: Path):
+    """After 0013 the database itself rejects an API agent with no provider binding (spec §10)."""
+
+    from sqlalchemy.exc import IntegrityError
+
+    db_path = tmp_path / "checked.db"
+    _pre_0012_database(db_path, [("prov_1", "OpenAI")], [("coder", "cli", None)])
+    Database.open(db_path)
 
     engine = create_engine(f"sqlite:///{db_path}", future=True)
+    with engine.connect() as conn:
+        table_sql = conn.exec_driver_sql(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='agents'"
+        ).scalar()
+    assert "ck_agents_api_provider" in str(table_sql)
+
+    # A CLI agent with no provider stays legal; an api-agent with a NULL binding must be refused.
     with engine.begin() as conn:
-        binding = conn.execute(text("SELECT provider_id FROM agents WHERE name='orphan'")).scalar()
+        conn.exec_driver_sql(
+            "INSERT INTO agents (name, normalized_name, title, runtime_type, provider_id, "
+            "state_revision, updated_at, data) VALUES ('cli2','cli2','','cli',NULL,0,'','{}')"
+        )
+    with pytest.raises(IntegrityError):
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "INSERT INTO agents (name, normalized_name, title, runtime_type, provider_id, "
+                "state_revision, updated_at, data) VALUES ('bad','bad','','api-agent',NULL,0,'','{}')"
+            )
     engine.dispose()
-    assert binding is None
 
 
 def test_0012_upgraded_schema_matches_a_fresh_database(tmp_path: Path):

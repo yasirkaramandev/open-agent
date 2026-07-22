@@ -29,6 +29,7 @@ from ..core.models import (
     ProviderConnection,
     Run,
     RunStatus,
+    RuntimeType,
     Session,
 )
 from . import db as t
@@ -69,6 +70,20 @@ class ProviderInUseByAgentError(RuntimeError):
         super().__init__(
             "this provider is still used by at least one agent; change or remove those agents first"
         )
+
+
+class ProviderNotFoundError(RuntimeError):
+    """An API agent names a provider that does not exist (spec §10.4).
+
+    Fail-closed: ``_provider_id_for`` used to return ``None`` for an unresolved name, which for an
+    API agent wrote a NULL binding — the "agent exists, provider missing" state. Resolving inside the
+    write transaction and raising here instead means the create/update loses cleanly against a
+    concurrent provider delete, rather than persisting an unrunnable agent.
+    """
+
+    def __init__(self, provider_name: str) -> None:
+        self.provider_name = provider_name
+        super().__init__(f"provider {provider_name!r} does not exist")
 
 
 def _now_iso() -> str:
@@ -370,13 +385,25 @@ class AgentRepository:
         same snapshot, so one of the two operations loses cleanly.
         """
 
+        is_api = agent.runtime.type is RuntimeType.API_AGENT
         name = agent.runtime.provider
         if not name:
+            # A CLI agent has no provider. An API agent with no provider name at all is the same
+            # "missing provider" failure — fail closed here rather than letting the 0013 CHECK reject
+            # it as a raw IntegrityError the create()/update() handler would mislabel a duplicate.
+            if is_api:
+                raise ProviderNotFoundError(name or "(unset)")
             return None
         row = conn.execute(
             select(t.provider_connections.c.id).where(t.provider_connections.c.name == name)
         ).first()
-        return str(row[0]) if row else None
+        if row is None:
+            # Fail closed for an API agent: a missing provider must abort the write (and, under the
+            # 0013 CHECK, cannot even be inserted), never persist a NULL binding.
+            if is_api:
+                raise ProviderNotFoundError(name)
+            return None
+        return str(row[0])
 
     def create(self, agent: AgentProfile) -> None:
         from ..core.naming import normalize_name

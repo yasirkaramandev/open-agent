@@ -14,6 +14,7 @@ from pathlib import Path
 
 from sqlalchemy import (
     JSON,
+    CheckConstraint,
     Column,
     Float,
     ForeignKey,
@@ -102,6 +103,15 @@ agents = Table(
     Column("state_revision", Integer, nullable=False, default=0, server_default="0"),
     Column("updated_at", String, nullable=False, default="", server_default=""),
     Column("data", JSON, nullable=False),
+    #: An API agent must name a provider that exists; NULL is only for CLI agents. The FK already
+    #: makes a *dangling* binding unrepresentable, but not a *missing* one — an api-agent row with a
+    #: NULL provider_id is the "agent exists, provider missing" state migration 0013 forbids. The
+    #: named constraint doubles as the marker 0013 uses to tell whether a rebuilt table already
+    #: carries it.
+    CheckConstraint(
+        "runtime_type != 'api-agent' OR provider_id IS NOT NULL",
+        name="ck_agents_api_provider",
+    ),
 )
 
 cli_installations = Table(
