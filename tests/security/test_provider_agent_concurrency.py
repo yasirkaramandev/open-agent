@@ -40,6 +40,7 @@ from openagent.storage.repositories import (
     ConcurrentModificationError,
     DuplicateNameError,
     ProviderInUseByAgentError,
+    ProviderNotFoundError,
     Repositories,
 )
 
@@ -201,6 +202,24 @@ def test_cli_agent_needs_no_provider(repos: Repositories) -> None:
     )
 
     assert repos.agents.get("cli-agent") is not None
+
+
+def test_api_agent_with_no_provider_name_is_refused(repos: Repositories) -> None:
+    """Fail-closed: an API agent naming no provider at all is the "missing provider" case, refused at
+    the repository rather than persisted with a NULL binding (spec §10.4)."""
+
+    with pytest.raises(ProviderNotFoundError):
+        repos.agents.create(_api_agent("coder"))  # provider=None
+    assert repos.agents.get("coder") is None
+
+
+def test_api_agent_with_a_missing_provider_is_refused(repos: Repositories) -> None:
+    """Fail-closed: naming a provider that does not exist raises rather than writing a NULL binding
+    (this is the deterministic form of the provider-delete/agent-create race, spec §10.4)."""
+
+    with pytest.raises(ProviderNotFoundError):
+        repos.agents.create(_api_agent("coder", provider="does-not-exist"))
+    assert repos.agents.get("coder") is None
 
 
 def test_delete_provider_while_creating_a_bound_agent_never_orphans(repos: Repositories) -> None:
