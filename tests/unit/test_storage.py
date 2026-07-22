@@ -4,6 +4,7 @@ from openagent.core.events import EventType, NormalizedEvent
 from openagent.core.models import (
     AgentProfile,
     AgentRuntime,
+    ModelProfile,
     Protocol,
     ProviderConnection,
     Run,
@@ -96,3 +97,53 @@ def test_event_log_redacts_secrets(tmp_path: Path):
     body = (tmp_path / "run_x" / "events.jsonl").read_text()
     assert "sk-abcdEFGH1234567890zzzz" not in body
     assert "REDACTED" in body
+
+
+def test_model_upsert_is_in_place_native_upsert(repos: Repositories) -> None:
+    """Upsert updates the existing row atomically rather than deleting and re-inserting it (§18)."""
+
+    repos.providers.create(ProviderConnection(id="p_x", name="prov-x", provider_type="openai"))
+    repos.models.upsert(ModelProfile(id="m1", provider_connection="p_x", remote_model_id="r0"))
+    repos.models.upsert(ModelProfile(id="m1", provider_connection="p_x", remote_model_id="r1"))
+
+    stored = repos.models.get("m1")
+    assert stored is not None and stored.remote_model_id == "r1"
+    assert len(repos.models.list_for_provider("p_x")) == 1
+
+
+def test_concurrent_model_upserts_never_expose_a_missing_row(tmp_path: Path) -> None:
+    """A reader must never observe the row absent while it is being upserted (§18).
+
+    Uses a file-backed DB with WAL so reads and writes genuinely run on separate connections.
+    """
+
+    import threading
+
+    from openagent.storage.db import Database
+
+    db = Database.open(tmp_path / "concurrent.db")
+    repos = Repositories(db)
+    repos.providers.create(ProviderConnection(id="p_c", name="prov-c", provider_type="openai"))
+    repos.models.upsert(ModelProfile(id="mc", provider_connection="p_c", remote_model_id="r0"))
+
+    stop = threading.Event()
+    missing: list[int] = []
+
+    def reader() -> None:
+        while not stop.is_set():
+            if repos.models.get("mc") is None:
+                missing.append(1)
+
+    watcher = threading.Thread(target=reader)
+    watcher.start()
+    try:
+        for index in range(300):
+            repos.models.upsert(
+                ModelProfile(id="mc", provider_connection="p_c", remote_model_id=f"r{index}")
+            )
+    finally:
+        stop.set()
+        watcher.join()
+
+    assert missing == [], "a concurrent reader saw the model row vanish during upsert"
+    assert repos.models.get("mc") is not None

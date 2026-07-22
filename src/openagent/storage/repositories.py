@@ -336,16 +336,25 @@ class ModelRepository:
         self.db = database
 
     def upsert(self, model: ModelProfile) -> None:
+        # Native INSERT ... ON CONFLICT, not DELETE-then-INSERT: the old form made the row briefly
+        # absent, so a concurrent reader could see a model vanish and reappear, and a failure between
+        # the two statements left it deleted. The upsert is a single atomic statement (spec §18).
+        stmt = sqlite_insert(t.models).values(
+            id=model.id,
+            provider_connection=model.provider_connection,
+            remote_model_id=model.remote_model_id,
+            data=model.model_dump(mode="json"),
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[t.models.c.id],
+            set_={
+                "provider_connection": stmt.excluded.provider_connection,
+                "remote_model_id": stmt.excluded.remote_model_id,
+                "data": stmt.excluded.data,
+            },
+        )
         with self.db.engine.begin() as conn:
-            conn.execute(sa_delete(t.models).where(t.models.c.id == model.id))
-            conn.execute(
-                insert(t.models).values(
-                    id=model.id,
-                    provider_connection=model.provider_connection,
-                    remote_model_id=model.remote_model_id,
-                    data=model.model_dump(mode="json"),
-                )
-            )
+            conn.execute(stmt)
 
     def get(self, model_id: str) -> ModelProfile | None:
         with self.db.engine.connect() as conn:
@@ -542,16 +551,24 @@ class CliRepository:
         self.db = database
 
     def upsert(self, cli: CliInstallation) -> None:
+        # Native atomic upsert; see ``ModelRepository.upsert`` for why DELETE-then-INSERT was wrong
+        # for a concurrently-read row (spec §18).
+        stmt = sqlite_insert(t.cli_installations).values(
+            id=cli.id,
+            type=cli.type,
+            executable=cli.executable,
+            data=cli.model_dump(mode="json"),
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[t.cli_installations.c.id],
+            set_={
+                "type": stmt.excluded.type,
+                "executable": stmt.excluded.executable,
+                "data": stmt.excluded.data,
+            },
+        )
         with self.db.engine.begin() as conn:
-            conn.execute(sa_delete(t.cli_installations).where(t.cli_installations.c.id == cli.id))
-            conn.execute(
-                insert(t.cli_installations).values(
-                    id=cli.id,
-                    type=cli.type,
-                    executable=cli.executable,
-                    data=cli.model_dump(mode="json"),
-                )
-            )
+            conn.execute(stmt)
 
     def get(self, cli_id: str) -> CliInstallation | None:
         with self.db.engine.connect() as conn:
