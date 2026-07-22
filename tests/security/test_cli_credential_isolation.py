@@ -218,6 +218,79 @@ def test_cli_verdict_overrides_a_stale_credential_file(
     assert evidence.source is CliCredentialSource.NONE
 
 
+def _clear_claude_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_fallback_treats_a_config_file_as_unknown_not_authenticated(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When `claude auth status` cannot be consulted, a config file proves configuration, not a
+    login: report UNKNOWN, never authenticated (§11.1). UNKNOWN must not round up to True — nor
+    block preflight forever."""
+
+    _clear_claude_env(monkeypatch)
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+    (tmp_path / ".claude.json").write_text('{"theme": "dark"}', encoding="utf-8")
+
+    missing_cli = tmp_path / "claude-missing"  # status unavailable -> fallback path
+    evidence = probe_claude_auth(str(missing_cli), build_child_environment("claude"))
+
+    assert evidence.authenticated is None
+    assert evidence.source is CliCredentialSource.UNKNOWN
+    assert evidence.blocking is False
+
+
+def test_fallback_treats_settings_json_as_unknown_not_authenticated(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _clear_claude_env(monkeypatch)
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.json").write_text('{"model": "opus"}', encoding="utf-8")
+
+    evidence = probe_claude_auth(
+        str(tmp_path / "claude-missing"), build_child_environment("claude")
+    )
+
+    assert evidence.authenticated is None
+    assert evidence.source is CliCredentialSource.UNKNOWN
+
+
+def test_fallback_treats_real_credential_store_as_authenticated(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """~/.claude/.credentials.json is a genuine credential store, not config — its presence is
+    real evidence of a login even when `claude auth status` cannot be consulted (§11.1)."""
+
+    _clear_claude_env(monkeypatch)
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / ".credentials.json").write_text("{}", encoding="utf-8")
+
+    evidence = probe_claude_auth(
+        str(tmp_path / "claude-missing"), build_child_environment("claude")
+    )
+
+    assert evidence.authenticated is True
+    assert evidence.source is CliCredentialSource.CLI_LOGIN
+
+
+def test_fallback_with_no_evidence_is_not_authenticated(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _clear_claude_env(monkeypatch)
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+
+    evidence = probe_claude_auth(
+        str(tmp_path / "claude-missing"), build_child_environment("claude")
+    )
+
+    assert evidence.authenticated is False
+    assert evidence.source is CliCredentialSource.NONE
+
+
 def test_cli_reported_key_source_is_named_in_a_conflict(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

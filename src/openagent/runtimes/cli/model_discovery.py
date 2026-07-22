@@ -10,6 +10,7 @@ import re
 import sys
 import tempfile
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -342,15 +343,39 @@ def claude_setting_paths(
 AnthropicPageFetcher = Callable[[str, str, str | None], dict[str, Any]]
 
 
-def fetch_anthropic_model_page(base_url: str, api_key: str, cursor: str | None) -> dict[str, Any]:
+@dataclass(frozen=True)
+class GatewayAuthPlan:
+    """How to authenticate a model-discovery request to a *gateway* — a distinct model from direct
+    Anthropic API auth (spec §11.3).
+
+    Anthropic's own ``/v1/models`` authenticates only with an ``x-api-key`` API key. A gateway may
+    instead expect an ``Authorization: Bearer`` OAuth/session token. Conflating the two is exactly
+    what sent an OAuth token as ``x-api-key``; keeping the header and its token source together here
+    makes each request carry the one credential its endpoint actually accepts.
+    """
+
+    header_name: str
+    token: str
+
+
+def fetch_anthropic_model_page(
+    base_url: str, api_key: str, cursor: str | None, *, auth: GatewayAuthPlan | None = None
+) -> dict[str, Any]:
     params = {"after_id": cursor} if cursor else {}
     url = base_url.rstrip("/") + "/v1/models"
+    # x-api-key is the direct-Anthropic credential and only ever an API key; a gateway supplies its
+    # own header/token via ``auth`` so an OAuth token is never sent as x-api-key (§11.2).
+    headers = {"anthropic-version": "2023-06-01"}
+    if auth is not None:
+        headers[auth.header_name] = auth.token
+    else:
+        headers["x-api-key"] = api_key
     with httpx.Client(timeout=DISCOVERY_TIMEOUT_SECONDS, follow_redirects=False) as client:
         with client.stream(
             "GET",
             url,
             params=params,
-            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+            headers=headers,
         ) as response:
             response.raise_for_status()
             body = bytearray()
@@ -366,16 +391,14 @@ def fetch_anthropic_model_page(base_url: str, api_key: str, cursor: str | None) 
 
 def _api_model_options(
     *,
-    base_url: str,
-    api_key: str,
-    fetcher: AnthropicPageFetcher,
+    page_fetch: Callable[[str | None], dict[str, Any]],
     source: str,
 ) -> list[CliModelOption]:
     options: list[CliModelOption] = []
     seen: set[str] = set()
     cursor: str | None = None
     for _page in range(100):
-        payload = fetcher(base_url, api_key, cursor)
+        payload = page_fetch(cursor)
         data = payload.get("data")
         if not isinstance(data, list):
             raise ValueError("model endpoint omitted data list")
@@ -410,10 +433,16 @@ def discover_claude_models(
     project_root: Path | None = None,
     env: Mapping[str, str] | None = None,
     api_key: str | None = None,
+    oauth_token: str | None = None,
     base_url: str | None = None,
     fetcher: AnthropicPageFetcher = fetch_anthropic_model_page,
 ) -> CliModelDiscoveryResult:
-    """Layer documented aliases/config over optional credential-scoped /v1/models discovery."""
+    """Layer documented aliases/config over optional credential-scoped /v1/models discovery.
+
+    ``api_key`` is an Anthropic API key used as ``x-api-key`` against the direct API. ``oauth_token``
+    is a distinct OAuth/session credential; it is **never** sent as ``x-api-key`` (§11.2). A gateway
+    uses whichever it has via a :class:`GatewayAuthPlan`.
+    """
 
     home = Path.home() if home is None else home
     env = dict(os.environ if env is None else env)
@@ -498,28 +527,44 @@ def discover_claude_models(
     partial = False
     error: str | None = None
     method = "aliases + account settings"
-    if api_key:
+
+    def _merge(page_fetch: Callable[[str | None], dict[str, Any]], source: str) -> None:
+        nonlocal partial, error, method
+        try:
+            for option in _api_model_options(page_fetch=page_fetch, source=source):
+                if option.id not in seen:
+                    seen.add(option.id)
+                    options.append(option)
+            method += f" + {source} /v1/models"
+        except Exception as exc:
+            partial = True
+            error = str(exc)[:500]
+
+    if api_key or oauth_token:
         effective_base = base_url or env.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com"
         parsed = urlparse(effective_base)
         direct_anthropic = parsed.hostname in {"api.anthropic.com", "api.claude.com"}
         gateway_enabled = env.get("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY") == "1"
-        if direct_anthropic or gateway_enabled:
-            source = "anthropic-api" if direct_anthropic else "claude-gateway"
-            try:
-                api_options = _api_model_options(
-                    base_url=effective_base,
-                    api_key=api_key,
-                    fetcher=fetcher,
-                    source=source,
-                )
-                for option in api_options:
-                    if option.id not in seen:
-                        seen.add(option.id)
-                        options.append(option)
-                method += f" + {source} /v1/models"
-            except Exception as exc:
-                partial = True
-                error = str(exc)[:500]
+        if direct_anthropic:
+            if api_key:
+                key = api_key
+                _merge(lambda cursor: fetcher(effective_base, key, cursor), "anthropic-api")
+            else:
+                # Only an OAuth/session token is present. Anthropic's /v1/models authenticates with
+                # x-api-key, and an OAuth token must never be sent there (§11.2) — so it is simply not
+                # usable for enumeration. Not an error: the alias/settings list still stands.
+                method += " (set ANTHROPIC_API_KEY to enumerate /v1/models; OAuth token not usable)"
+        elif gateway_enabled:
+            # A gateway authenticates on its own terms: prefer the OAuth bearer, else the API key.
+            plan = (
+                GatewayAuthPlan("Authorization", f"Bearer {oauth_token}")
+                if oauth_token
+                else GatewayAuthPlan("x-api-key", api_key or "")
+            )
+            _merge(
+                lambda cursor: fetch_anthropic_model_page(effective_base, "", cursor, auth=plan),
+                "claude-gateway",
+            )
         elif base_url:
             partial = True
             error = "custom base URL is not Anthropic and gateway discovery is not enabled"

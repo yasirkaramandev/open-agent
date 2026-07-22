@@ -368,13 +368,31 @@ def _claude_fallback(
         )
 
     credentials_file = Path.home() / ".claude" / ".credentials.json"
-    legacy_file = Path.home() / ".claude.json"
-    if credentials_file.exists() or legacy_file.exists():
+    if credentials_file.exists():
+        # A real credential store, not a config file: its presence is genuine evidence of a login.
         return CliAuthEvidence(
             cli_type="claude",
             authenticated=True,
             source=CliCredentialSource.CLI_LOGIN,
-            detail=f"{detail}; stored credentials present under ~/.claude",
+            detail=f"{detail}; stored credentials present at ~/.claude/.credentials.json",
+            executable=executable,
+            environment_names=[],
+        )
+    config_present = (Path.home() / ".claude.json").exists() or (
+        Path.home() / ".claude" / "settings.json"
+    ).exists()
+    if config_present:
+        # ``~/.claude.json`` and ``settings.json`` hold *configuration*, not credentials — a machine
+        # can carry either with no usable login. Treating their mere existence as authenticated is
+        # the false positive being fixed (§11.1). Report UNKNOWN, which must never round up to true.
+        return CliAuthEvidence(
+            cli_type="claude",
+            authenticated=None,
+            source=CliCredentialSource.UNKNOWN,
+            detail=(
+                f"{detail}; a Claude config file exists but no credential could be confirmed. "
+                "Run `claude auth status`, or set ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN"
+            ),
             executable=executable,
             environment_names=[],
         )

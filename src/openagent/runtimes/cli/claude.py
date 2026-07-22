@@ -136,16 +136,20 @@ class ClaudeAdapter:
         context = context or CliModelDiscoveryContext()
         plan = build_child_environment("claude")
         environment = context.environment or plan.as_child_env()
-        api_key = (
-            environment.get("ANTHROPIC_API_KEY")
-            or environment.get("ANTHROPIC_AUTH_TOKEN")
-            or environment.get("CLAUDE_CODE_OAUTH_TOKEN")
+        # Keep the credential *types* apart: ANTHROPIC_API_KEY is the x-api-key credential for the
+        # direct Anthropic API; ANTHROPIC_AUTH_TOKEN / CLAUDE_CODE_OAUTH_TOKEN are OAuth/session
+        # tokens that must never be sent as x-api-key (§11.2). Collapsing them into one value is what
+        # sent an OAuth token to the direct API; discovery now decides per endpoint which applies.
+        api_key = environment.get("ANTHROPIC_API_KEY")
+        oauth_token = environment.get("ANTHROPIC_AUTH_TOKEN") or environment.get(
+            "CLAUDE_CODE_OAUTH_TOKEN"
         )
         result = await asyncio.to_thread(
             discover_claude_models,
             project_root=context.project_root,
             env=environment,
             api_key=api_key,
+            oauth_token=oauth_token,
             base_url=context.base_url or environment.get("ANTHROPIC_BASE_URL"),
         )
         self.last_model_discovery = result

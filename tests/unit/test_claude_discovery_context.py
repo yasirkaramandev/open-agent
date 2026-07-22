@@ -124,6 +124,33 @@ async def test_credential_from_context_reaches_the_api_lookup(tmp_path: Path) ->
     assert "acme-api-model" in result.models
 
 
+async def test_oauth_token_is_never_sent_to_direct_anthropic_as_x_api_key(tmp_path: Path) -> None:
+    """An OAuth/session token must never authenticate the direct Anthropic /v1/models call, which
+    uses x-api-key (§11.2). With only an OAuth token and no API key, the direct call is skipped
+    entirely — aliases/config still stand — and the fetcher is never invoked."""
+
+    called = False
+
+    def fetcher(base_url: str, api_key: str, cursor: str | None) -> dict:
+        nonlocal called
+        called = True
+        return {"data": [], "has_more": False}
+
+    result = discover_claude_models(
+        home=tmp_path / "home",
+        project_root=tmp_path / "project",
+        env={},
+        api_key=None,
+        oauth_token="oauth-session-token-CANARY",
+        base_url="https://api.anthropic.com",
+        fetcher=fetcher,
+    )
+
+    assert called is False, "an OAuth token must not trigger the x-api-key /v1/models call"
+    assert result.error is None  # not an error — the alias list is still valid
+    assert result.models  # documented aliases are still returned
+
+
 def test_discovery_context_repr_hides_the_environment() -> None:
     """The context carries real API keys; its repr reaches tracebacks and logs."""
 
