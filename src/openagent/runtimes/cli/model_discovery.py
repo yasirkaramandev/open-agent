@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,16 +62,37 @@ class CliModelDiscoveryResult(BaseModel):
         return [option.id for option in self.options]
 
 
-_SCHEMA_CACHE: dict[tuple[str, str], bool] = {}
+@dataclass
+class CapabilityCacheEntry:
+    """A cached capability probe result with an expiry (spec §13.1).
+
+    The previous cache was a bare ``dict[..., bool]`` that stored ``False`` on *any* failure —
+    timeout, a transient temp-directory error, a nonzero exit during a flaky app-server start — and
+    never re-checked, so one hiccup disabled Codex model discovery for the whole process. An entry
+    now expires: a positive result is trusted for a long time (a CLI version's schema does not change
+    under it), and a negative-or-transient one only briefly, so the next call retries.
+    """
+
+    supported: bool | None
+    error_type: str | None
+    checked_at: float
+    expires_at: float
 
 
-def _schema_supports_model_list(
-    executable: str, version: str | None, runner: CommandRunner = run_bounded
-) -> bool:
-    key = (str(Path(executable).resolve()), version or "unknown")
-    cached = _SCHEMA_CACHE.get(key)
-    if cached is not None:
-        return cached
+#: A confirmed capability is stable for the life of an installed CLI; re-probing it is pure cost.
+_CAPABILITY_POSITIVE_TTL = 3600.0
+#: A negative or transient result is retried soon — the failure may have been a fluke.
+_CAPABILITY_NEGATIVE_TTL = 30.0
+
+_SCHEMA_CACHE: dict[tuple[str, str], CapabilityCacheEntry] = {}
+
+
+def _probe_schema_supports_model_list(
+    executable: str, runner: CommandRunner
+) -> tuple[bool, str | None]:
+    """Actually run the schema probe. Returns ``(supported, error_type)``; ``error_type`` is the
+    reason a negative result should be treated as short-lived rather than durable."""
+
     with tempfile.TemporaryDirectory(prefix="openagent-codex-schema-") as temporary:
         output = Path(temporary)
         try:
@@ -80,24 +102,37 @@ def _schema_supports_model_list(
                 MAX_SCHEMA_BYTES,
             )
             if result.returncode != 0:
-                _SCHEMA_CACHE[key] = False
-                return False
+                return False, "nonzero_exit"
             total = 0
-            found = False
             for path in output.rglob("*.json"):
                 if not path.is_file():
                     continue
-                size = path.stat().st_size
-                total += size
+                total += path.stat().st_size
                 if total > MAX_SCHEMA_BYTES:
-                    raise ValueError("Codex app-server schema exceeds size limit")
+                    return False, "schema_too_large"
                 if "model/list" in path.read_text(encoding="utf-8", errors="replace"):
-                    found = True
-            _SCHEMA_CACHE[key] = found
-            return found
-        except Exception:
-            _SCHEMA_CACHE[key] = False
-            return False
+                    return True, None
+            return False, None
+        except Exception as exc:
+            return False, type(exc).__name__
+
+
+def _schema_supports_model_list(
+    executable: str,
+    version: str | None,
+    runner: CommandRunner = run_bounded,
+    *,
+    refresh: bool = False,
+) -> bool:
+    key = (str(Path(executable).resolve()), version or "unknown")
+    now = time.monotonic()
+    entry = _SCHEMA_CACHE.get(key)
+    if entry is not None and not refresh and entry.supported is not None and now < entry.expires_at:
+        return entry.supported
+    supported, error_type = _probe_schema_supports_model_list(executable, runner)
+    ttl = _CAPABILITY_POSITIVE_TTL if supported else _CAPABILITY_NEGATIVE_TTL
+    _SCHEMA_CACHE[key] = CapabilityCacheEntry(supported, error_type, now, now + ttl)
+    return supported
 
 
 def _reasoning_efforts(raw: object) -> list[str]:
@@ -172,16 +207,64 @@ async def _read_json_line(
     return value
 
 
+#: How much of a chatty app-server's stderr to keep for diagnostics. Small: it is a tail for an
+#: error message, not a log.
+_STDERR_TAIL_LIMIT = 8 * 1024
+#: Redact anything key-shaped before stderr ever reaches an error string. ``minimal_environment``
+#: already keeps OpenAgent's own secrets out of the child, so this guards against a token the child
+#: prints from its *own* configuration.
+_SECRET_TAIL_RE = re.compile(
+    r"(sk-[A-Za-z0-9._\-]{6,}|nvapi-[A-Za-z0-9._\-]{6,}|Bearer\s+[A-Za-z0-9._\-]{6,})"
+)
+
+
+def _redact_secrets(text: str) -> str:
+    return _SECRET_TAIL_RE.sub("[redacted]", text)
+
+
+async def _drain_stderr(
+    stream: asyncio.StreamReader, tail_out: bytearray, *, on_overflow: Callable[[], None]
+) -> None:
+    """Continuously read ``stream`` to EOF, retaining only the last ``_STDERR_TAIL_LIMIT`` bytes.
+
+    A single ``read(n)`` returns the *first* chunk and then stops draining, so a Codex app-server
+    that keeps writing to stderr fills the OS pipe buffer, blocks on its next write, and stops
+    answering on stdout — deadlocking the handshake (which then only fails on the deadline). Reading
+    in a loop keeps the pipe empty. Past ``MAX_PROTOCOL_BYTES`` total the process is a runaway:
+    ``on_overflow`` terminates it and draining stops (spec §13.2).
+    """
+
+    total = 0
+    while True:
+        try:
+            chunk = await stream.read(65536)
+        except Exception:
+            return
+        if not chunk:
+            return
+        total += len(chunk)
+        tail_out.extend(chunk)
+        if len(tail_out) > _STDERR_TAIL_LIMIT:
+            del tail_out[:-_STDERR_TAIL_LIMIT]
+        if total > MAX_PROTOCOL_BYTES:
+            on_overflow()
+            return
+
+
 async def discover_codex_models(
     executable: str,
     *,
     version: str | None = None,
     schema_runner: CommandRunner = run_bounded,
+    refresh: bool = False,
 ) -> CliModelDiscoveryResult:
-    """Handshake with the installed Codex app-server and page ``model/list`` without a turn."""
+    """Handshake with the installed Codex app-server and page ``model/list`` without a turn.
+
+    ``refresh`` bypasses the capability cache so a transient failure can be re-checked on demand.
+    """
 
     schema_ok = await asyncio.to_thread(
-        _schema_supports_model_list, executable, version, schema_runner
+        _schema_supports_model_list, executable, version, schema_runner, refresh=refresh
     )
     if not schema_ok:
         return CliModelDiscoveryResult(
@@ -192,7 +275,8 @@ async def discover_codex_models(
         )
     proc: asyncio.subprocess.Process | None = None
     identity = None
-    stderr_task: asyncio.Task[bytes] | None = None
+    stderr_task: asyncio.Task[None] | None = None
+    stderr_tail = bytearray()
     try:
         proc = await asyncio.create_subprocess_exec(
             executable,
@@ -207,7 +291,15 @@ async def discover_codex_models(
         identity = capture_process_identity(proc.pid)
         if proc.stdin is None or proc.stdout is None or proc.stderr is None:
             raise RuntimeError("Codex app-server stdio pipes unavailable")
-        stderr_task = asyncio.create_task(proc.stderr.read(MAX_PROTOCOL_BYTES + 1))
+
+        def _kill_runaway() -> None:
+            with contextlib.suppress(Exception):
+                if proc is not None:
+                    proc.kill()
+
+        stderr_task = asyncio.create_task(
+            _drain_stderr(proc.stderr, stderr_tail, on_overflow=_kill_runaway)
+        )
 
         async def send(message: dict[str, Any]) -> None:
             assert proc is not None and proc.stdin is not None
@@ -275,11 +367,15 @@ async def discover_codex_models(
             method="codex-app-server model/list",
         )
     except Exception as exc:
+        detail = str(exc)[:400]
+        tail = _redact_secrets(bytes(stderr_tail).decode("utf-8", "replace")).strip()
+        if tail:
+            detail = f"{detail}; app-server stderr (tail): {tail[-200:]}"
         return CliModelDiscoveryResult(
             cli_type="codex",
             available=False,
             method="codex-app-server model/list",
-            error=str(exc)[:500],
+            error=detail[:500],
         )
     finally:
         if proc is not None:
@@ -293,12 +389,13 @@ async def discover_codex_models(
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(proc.wait(), timeout=2)
         if stderr_task is not None:
+            # The process is terminated above, so stderr has hit EOF and the drain finishes on its
+            # own; cancel only guards a stuck read. No raise here — a finally that raises would mask
+            # the real result (the drain already bounds and redacts its retained tail).
             if not stderr_task.done():
                 stderr_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
-                stderr = await stderr_task
-                if len(stderr) > MAX_PROTOCOL_BYTES:
-                    raise ValueError("Codex app-server stderr exceeded discovery limit")
+                await stderr_task
 
 
 _CLAUDE_ALIASES = (

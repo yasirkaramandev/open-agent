@@ -194,3 +194,84 @@ def test_agy_discovery_distinguishes_empty_catalog_and_execution_error():
     assert empty.error is None
     assert failed.available is False
     assert "not signed in" in (failed.error or "")
+
+
+def test_schema_capability_negative_cache_expires_and_refresh_bypasses(tmp_path: Path) -> None:
+    """A transient probe failure must not disable model discovery for the whole process (§13.1).
+
+    The old cache stored False on any failure forever. Now a negative result has a short TTL, the
+    cached value is reused within it (no re-probe), and ``refresh`` bypasses it to re-check."""
+
+    from openagent.runtimes.cli.model_discovery import (
+        _CAPABILITY_NEGATIVE_TTL,
+        _SCHEMA_CACHE,
+        _schema_supports_model_list,
+    )
+
+    _SCHEMA_CACHE.clear()
+    executable = tmp_path / "codex"
+    executable.write_text("stub", encoding="utf-8")
+    calls = {"n": 0}
+
+    def flaky_runner(argv, timeout, limit):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return CommandResult(returncode=1)  # transient nonzero exit
+        out_dir = Path(argv[argv.index("--out") + 1])
+        (out_dir / "schema.json").write_text('{"methods": ["model/list"]}', encoding="utf-8")
+        return CommandResult(returncode=0)
+
+    assert _schema_supports_model_list(str(executable), "v1", flaky_runner) is False
+    key = (str(executable.resolve()), "v1")
+    entry = _SCHEMA_CACHE[key]
+    assert entry.supported is False
+    assert entry.expires_at - entry.checked_at == _CAPABILITY_NEGATIVE_TTL  # short, not forever
+
+    # Within the TTL the negative is reused without a re-probe.
+    assert _schema_supports_model_list(str(executable), "v1", flaky_runner) is False
+    assert calls["n"] == 1
+
+    # refresh forces a re-check, which now succeeds and is cached positive.
+    assert _schema_supports_model_list(str(executable), "v1", flaky_runner, refresh=True) is True
+    assert calls["n"] == 2
+    assert _SCHEMA_CACHE[key].supported is True
+
+
+def test_stderr_drain_keeps_a_bounded_tail() -> None:
+    from openagent.runtimes.cli.model_discovery import _STDERR_TAIL_LIMIT, _drain_stderr
+
+    async def run() -> tuple[bytes, bool]:
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"A" * 20000)
+        reader.feed_data(b"B" * 20000)
+        reader.feed_eof()
+        tail = bytearray()
+        fired = {"overflow": False}
+        await _drain_stderr(reader, tail, on_overflow=lambda: fired.__setitem__("overflow", True))
+        return bytes(tail), fired["overflow"]
+
+    tail, overflow = asyncio.run(run())
+    assert overflow is False
+    assert len(tail) <= _STDERR_TAIL_LIMIT  # bounded, not the full 40 KB
+    assert tail.endswith(b"B")  # the *tail* is retained
+
+
+def test_stderr_drain_terminates_a_runaway_stream() -> None:
+    from openagent.runtimes.cli.model_discovery import (
+        _STDERR_TAIL_LIMIT,
+        MAX_PROTOCOL_BYTES,
+        _drain_stderr,
+    )
+
+    async def run() -> tuple[bool, int]:
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"x" * (MAX_PROTOCOL_BYTES + 4096))
+        reader.feed_eof()
+        tail = bytearray()
+        fired = {"overflow": False}
+        await _drain_stderr(reader, tail, on_overflow=lambda: fired.__setitem__("overflow", True))
+        return fired["overflow"], len(tail)
+
+    overflow, tail_len = asyncio.run(run())
+    assert overflow is True  # the hard limit fired -> the runaway process is terminated
+    assert tail_len <= _STDERR_TAIL_LIMIT
