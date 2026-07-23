@@ -1,0 +1,52 @@
+name: YouTube Operations Console
+
+on:
+  pull_request:
+    paths:
+      - "examples/youtube-operations-console/**"
+      - ".github/workflows/youtube-operations-console.yml"
+  push:
+    branches:
+      - "example/youtube-operations-console"
+    paths:
+      - "examples/youtube-operations-console/**"
+      - ".github/workflows/youtube-operations-console.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  api-and-policy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/youtube-operations-console
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: examples/youtube-operations-console/apps/api/pyproject.toml
+      - run: python -m pip install -e "apps/api[dev]"
+      - run: ruff format --check apps/api/src apps/api/tests tests/security apps/worker
+      - run: ruff check apps/api/src apps/api/tests tests/security apps/worker
+      - run: mypy apps/api/src apps/worker
+      - run: pytest -q apps/api/tests tests/security
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/youtube-operations-console/apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.0"
+          cache: npm
+          cache-dependency-path: examples/youtube-operations-console/apps/web/package-lock.json
+      - run: npm ci
+      - run: npm audit
+      - run: npm run lint
+      - run: npm test
