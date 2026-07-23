@@ -108,6 +108,7 @@ class ProviderTransaction:
             "provider_add",
             {
                 "provider_id": self.provider.id,
+                "credential_revision": self.provider.credential_revision,
                 "credential": credential.model_dump(mode="json"),
                 "legacy_credential": (
                     self._legacy_credential.model_dump(mode="json")
@@ -116,6 +117,8 @@ class ProviderTransaction:
                 ),
             },
         )
+        self._operation.payload["operation_id"] = self._operation.id
+        self._operation.advance("begun")
         if self._api_key and credential.type is CredentialType.KEYCHAIN:
             # Capture the *value* that was there before (needed to restore it byte-for-byte), then
             # overwrite it. Held only until commit()/rollback.
@@ -168,6 +171,7 @@ class ProviderTransaction:
         # rolled back exactly (keychain restored, half-written provider row removed).
         if not self._committed:
             restore_error: BaseException | None = None
+            compensation_error: BaseException | None = None
             try:
                 self._restore()
             except BaseException as restore_exc:
@@ -177,9 +181,19 @@ class ProviderTransaction:
                 restore_error = restore_exc
             finally:
                 self._forget()
-            with contextlib.suppress(Exception):
-                self._repos.providers.delete(self.provider.id)
-            if self._operation is not None and restore_error is None:
+            try:
+                deleted = self._repos.providers.delete_owned_with_probes(
+                    self.provider.id, self.provider.credential_revision
+                )
+                if self._operation is not None:
+                    self._operation.advance(
+                        "owned_compensation" if deleted else "superseded_generation"
+                    )
+            except Exception as delete_exc:
+                # Keep the original partner-write exception authoritative. The durable journal has
+                # all immutable ownership fields startup recovery needs to retry safely.
+                compensation_error = delete_exc
+            if self._operation is not None and restore_error is None and compensation_error is None:
                 self._operation.complete()
             if restore_error is not None:
                 raise restore_error
@@ -421,19 +435,28 @@ class ProviderService:
             "provider_remove",
             {
                 "provider_id": provider.id,
+                "credential_revision": provider.credential_revision,
                 "credential": provider.credential.model_dump(mode="json"),
             },
         )
+        operation.payload["operation_id"] = operation.id
+        operation.advance("begun")
         # Purge this connection's probes before the row goes: the id is derived from the name, so a
         # re-add under the same name reuses it. The credential revision would reject the inherited
         # rows anyway; deleting them keeps the store from accumulating verdicts for a connection
         # that no longer exists (spec §22).
         try:
-            self.repos.providers.delete_with_probes(provider.id)
+            deleted = self.repos.providers.delete_owned_with_probes(
+                provider.id, provider.credential_revision
+            )
         except ProviderInUseByAgentError as exc:
             # The constraint caught a dependent this transaction could not see when it started.
             operation.complete()
             raise ProviderInUseError(name, self.agents_using(name)) from exc
+        if not deleted:
+            operation.advance("superseded_generation")
+            operation.complete()
+            return False
         operation.advance("db_deleted")
         if provider.credential.type is CredentialType.KEYCHAIN:
             self.credentials.delete_secret(provider.credential, strict=True)

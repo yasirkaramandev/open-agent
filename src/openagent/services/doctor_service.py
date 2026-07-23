@@ -250,7 +250,13 @@ class DoctorService:
                     f"{name} authentication",
                     OK if entry.authenticated else WARN,
                     entry.auth_detail
-                    or ("authenticated" if entry.authenticated else "not detected"),
+                    or (
+                        "authenticated"
+                        if entry.authenticated is True
+                        else "unauthenticated"
+                        if entry.authenticated is False
+                        else "unknown"
+                    ),
                 )
             )
             caps = (

@@ -34,6 +34,12 @@ from ..providers.discovery import (
     looks_non_chat,
 )
 from ..providers.factory import PRESETS, get_preset, preset_names
+from ..runtimes.cli.update_policy import (
+    PostUpdateFailureChoice,
+    PostUpdateFailurePrompt,
+    UpdateChoice,
+    UpdatePrompt,
+)
 from ..services.agent_service import AgentError
 from ..services.project_service import ProjectError
 from ..services.provider_service import ProviderInUseError, ProviderValidationError
@@ -62,6 +68,50 @@ err = Console(stderr=True)
 
 def _app() -> OpenAgentApp:
     return OpenAgentApp.create()
+
+
+def _wire_interactive_update_prompts(oa: OpenAgentApp) -> None:
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return
+
+    def initial(prompt: UpdatePrompt) -> UpdateChoice:
+        console.print(safe_markup(prompt.question(), 500))
+        console.print(
+            "[1] Update now\n[2] Continue with installed version\n"
+            "[3] Cancel this run\n[4] Skip this version"
+        )
+        choice = typer.prompt("Choice", type=int)
+        return {
+            1: UpdateChoice.UPDATE_NOW,
+            2: UpdateChoice.CONTINUE_WITHOUT_UPDATING,
+            3: UpdateChoice.CANCEL_RUN,
+            4: UpdateChoice.SKIP_THIS_VERSION,
+        }.get(choice, UpdateChoice.CANCEL_RUN)
+
+    def failed(prompt: PostUpdateFailurePrompt) -> PostUpdateFailureChoice:
+        console.print("[red]Update failed verification.[/red]")
+        console.print(
+            f"Installed: {safe_markup(prompt.installed_version or 'unknown', 100)}\n"
+            f"Expected: {safe_markup(prompt.expected_version or 'unknown', 100)}\n"
+            f"Source: {safe_markup(prompt.install_source, 100)}\n"
+            f"Failure: {safe_markup(prompt.failure_category, 100)}\n"
+            f"Minimum: {safe_markup(prompt.minimum_supported_version or 'not specified', 100)}\n"
+            f"Installed runnable: {'yes' if prompt.installed_runnable else 'no'}"
+        )
+        console.print(
+            "[1] Continue with installed version\n"
+            "[2] Cancel this run\n"
+            "[3] Show Doctor/update details"
+        )
+        choice = typer.prompt("Choice", type=int)
+        if choice == 1 and prompt.installed_runnable:
+            return PostUpdateFailureChoice.CONTINUE_WITH_INSTALLED
+        if choice == 3:
+            return PostUpdateFailureChoice.OPEN_DOCTOR
+        return PostUpdateFailureChoice.CANCEL_RUN
+
+    oa.update_prompt = initial
+    oa.update_failure_prompt = failed
 
 
 def _run(coro):
@@ -492,6 +542,7 @@ def run(
     Approvals: without --yes a non-interactive run denies high-risk operations by default.
     """
     oa = _app()
+    _wire_interactive_update_prompts(oa)
     oa.runs.recover_orphans()
     try:
         run_obj = oa.runs.create(

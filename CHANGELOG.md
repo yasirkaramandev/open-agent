@@ -4,6 +4,56 @@ All notable changes to OpenAgent are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.6rc4] — unreleased
+
+Fourth release candidate. This candidate closes the remaining ownership, fail-closed boundary and
+interactive recovery blockers found in rc3. Every defect below has a regression test that was first
+run against the rc3 implementation and observed failing. This is not the final `0.1.6` release:
+remote CI across the supported OS/Python matrix and the RC soak remain release gates.
+
+### Data integrity and recovery
+
+- **Agent creation is database-authoritative.** Once the insert commits, an `OPENAGENT.md`
+  projection conflict, lock timeout or I/O failure leaves a durable pending sync operation and
+  returns the committed agent; it never deletes a row that another process may already have
+  updated.
+- **Provider compensation is generation-owned.** Migration
+  `0014_provider_generation_ownership` backfills an authoritative, non-null relational
+  `credential_revision` from validated provider JSON without dropping or rewriting domain data.
+  Create, update, upsert, rollback and startup recovery compare that revision before deleting a row
+  or its probes. Stale operations may clean only their own revision-scoped secret.
+- **Live journal operations carry PID/start-time ownership.** A second process does not mistake a
+  paused operation for a crashed one; PID reuse and unverifiable live identity are handled
+  fail-closed.
+- **Compatibility metadata is validated fail-closed.** Malformed writer/minimum-reader versions and
+  schema revision/version disagreement raise a typed, redacted
+  `DatabaseMetadataValidationError`. The Textual startup recovery screen can show safe version,
+  Doctor, update and repair actions without constructing `OpenAgentApp` or opening the database.
+
+### Security
+
+- **Git content-filter isolation covers effective configuration and every attribute source.** Filter
+  keys are discovered through Git's fixed-argv local config parser with includes enabled; root and
+  nested `.gitattributes`, linked-worktree attributes and safe `core.attributesFile` sources are
+  bounded and symlink-checked. Every discovered clean/smudge/process filter is neutralized. An
+  ambiguous or external source rejects the Git backend so the existing isolated-copy fallback can
+  take over.
+- **CLI authentication remains tri-state end-to-end.** `UNKNOWN` is no longer narrowed to
+  unauthenticated by adapters, preflight, Doctor or the TUI. Claude's stored-login evidence must be
+  a bounded regular JSON file with recognized credential metadata; malformed content is never
+  rendered.
+
+### Reliability and interaction
+
+- **Global JSON preferences use one locked store.** `config.json` CLI-update state and update-prompt
+  suppressions use cross-process re-read-under-lock, bounded object schemas, atomic fsync writes,
+  `0600` permissions and malformed-file quarantine. Legacy suppression lists migrate without
+  dropping the user's choices, and unknown sections survive concurrent updates.
+- **A user-requested update failure requires a second decision.** Interactive CLI and Textual flows
+  offer continue-with-installed, cancel and Doctor choices with redacted verification context.
+  Unparseable or below-minimum installed versions cannot continue, and non-interactive behavior
+  remains policy-driven.
+
 ## [0.1.6rc3] — unreleased
 
 Third release candidate. Closes the release blockers left open in rc2 (see rc2's *Known gaps*), plus
