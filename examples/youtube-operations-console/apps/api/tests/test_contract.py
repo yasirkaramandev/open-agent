@@ -1,5 +1,4 @@
 from fastapi.testclient import TestClient
-
 from signal_api.db_models import Base, OAuthCredential
 from signal_api.domain import (
     Approval,
