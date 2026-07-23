@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OpenAgent task route",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "category",
+    "risk",
+    "suggested_agents",
+    "requires_security_review",
+    "requires_compliance_review",
+    "dependencies",
+    "acceptance_tests",
+    "forbidden_changes"
+  ],
+  "properties": {
+    "task_id": { "type": "string", "pattern": "^task_[a-zA-Z0-9_-]+$" },
+    "category": { "enum": ["frontend", "backend", "security", "qa", "compliance", "docs", "cross-cutting"] },
+    "risk": { "enum": ["low", "medium", "high", "critical"] },
+    "suggested_agents": { "type": "array", "items": { "type": "string" }, "minItems": 1, "uniqueItems": true },
+    "requires_security_review": { "type": "boolean" },
+    "requires_compliance_review": { "type": "boolean" },
+    "dependencies": { "type": "array", "items": { "type": "string" } },
+    "acceptance_tests": { "type": "array", "items": { "type": "string" } },
+    "forbidden_changes": { "type": "array", "items": { "type": "string" } }
+  }
+}

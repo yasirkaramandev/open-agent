@@ -1,0 +1,21 @@
+{
+  "agent_profile": "safe-edit",
+  "automatic_worker_tasks": [
+    "token_health_check",
+    "target_channel_monitor",
+    "webhook_process",
+    "metadata_refresh",
+    "quota_accounting",
+    "notification",
+    "analytics_snapshot",
+    "expired_proposal_cleanup"
+  ],
+  "youtube_write_requirements": [
+    "one_account",
+    "exact_payload_hash",
+    "explicit_user_approval",
+    "idempotency_key",
+    "audit_event",
+    "feature_flag"
+  ]
+}

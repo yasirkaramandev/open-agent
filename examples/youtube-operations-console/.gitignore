@@ -1,0 +1,13 @@
+.openagent-local/
+.openagent/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.venv/
+**/node_modules/
+**/.next/
+**/.wrangler/
+**/dist/
+.env
+.env.*
+!.env.example
