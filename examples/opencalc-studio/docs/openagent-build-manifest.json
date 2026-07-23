@@ -1,0 +1,77 @@
+{
+  "product": "OpenCalc Studio",
+  "note": "Provenance compiled by the OpenAgent orchestration operator from REAL OpenAgent run records (`openagent runs --json`, per-run artifacts under .openagent/runs/, and the run worktree branches). The GLM provider (z-ai/glm-5.2 via NVIDIA Build) was quota-exhausted (HTTP 429) before this manifest could itself be authored by an agent, so it is operator-compiled from verifiable run data rather than agent-authored. All PRODUCT and PLAN source files listed below were authored by agent runs; no product source was hand-written.",
+  "branch": "example/opencalc-studio",
+  "base_commit": "f5abf2666a41f5548c1ed4fe3bf5bcef91097aef",
+  "provider": "z-ai/glm-5.2 (nvidia-build, openai-chat)",
+  "status": "partial — engine + plan delivered; UI/PWA/QA/security/docs blocked by provider quota exhaustion",
+  "tasks": [
+    {
+      "task_id": "calc-plan-001",
+      "agent": "glm-orchestrator",
+      "openagent_run_id": "run_3bc9d9d80d23",
+      "run_status": "completed",
+      "base_commit": "f5abf2666a41f5548c1ed4fe3bf5bcef91097aef",
+      "result_commit": "5786d69c87b3945fc935358266af6b62637a9617",
+      "integration_commit": "2e0f9d80aad35adca1c54eb4b2c2aad6599dfafe",
+      "prompt_artifact": ".openagent/runs/run_3bc9d9d80d23/request.json",
+      "output_artifact": ".openagent/runs/run_3bc9d9d80d23/output.md",
+      "files_changed": [
+        "examples/opencalc-studio/docs/openagent-task-graph.json",
+        "examples/opencalc-studio/docs/architecture.md",
+        "examples/opencalc-studio/docs/acceptance-criteria.md"
+      ],
+      "reviewed_by": ["operator (json validity + structure verified)"],
+      "status": "accepted"
+    },
+    {
+      "task_id": "calc-task-001",
+      "agent": "agy-frontend",
+      "openagent_run_id": "run_e38ed3f90b82",
+      "run_status": "failed (HTTP 429 after all deliverables were written; files salvaged from the run worktree)",
+      "base_commit": "2e0f9d80aad35adca1c54eb4b2c2aad6599dfafe",
+      "result_commit": null,
+      "integration_commit": "28994d06314afbf12e6edf0af760d978772da7d4",
+      "prompt_artifact": ".openagent/runs/run_e38ed3f90b82/request.json",
+      "output_artifact": ".openagent/runs/run_e38ed3f90b82/output.md",
+      "files_changed": [
+        "examples/opencalc-studio/package.json",
+        "examples/opencalc-studio/tsconfig.json",
+        "examples/opencalc-studio/vitest.config.ts",
+        "examples/opencalc-studio/src/calculator/types.ts",
+        "examples/opencalc-studio/src/calculator/decimal.ts",
+        "examples/opencalc-studio/src/calculator/tokenizer.ts",
+        "examples/opencalc-studio/src/calculator/parser.ts",
+        "examples/opencalc-studio/src/calculator/scientific.ts",
+        "examples/opencalc-studio/src/calculator/evaluator.ts",
+        "examples/opencalc-studio/src/calculator/index.ts",
+        "examples/opencalc-studio/src/calculator/engine.test.ts"
+      ],
+      "verification": "operator ran `npm install && npx vitest run` (not modified): 43 passed / 1 failed (44 total)",
+      "reviewed_by": ["operator (vitest execution)"],
+      "known_issue": "engine.test.ts expects a trailing ')' to throw MismatchedParens; the agent's parser throws SyntaxError. A follow-up agy-frontend fix run (run_af50a11af338, run_7b918783984c) was attempted but blocked by provider quota (429).",
+      "status": "accepted-with-known-issue"
+    }
+  ],
+  "not_completed": {
+    "reason": "GLM/nvidia-build provider quota exhaustion (repeated HTTP 429) after ~8 runs, plus per-turn slowness and tool-argument unreliability. Resumable when quota resets.",
+    "outstanding_tasks": [
+      "calc-task-002 scientific-mode UI",
+      "calc-task-003 standard calculator UI (React)",
+      "calc-task-004 history/settings/theme/PWA",
+      "calc-task-005 QA (vitest expansion, playwright, axe)",
+      "calc-task-006 security review",
+      "calc-task-007 documentation",
+      "calc-task-008 integration review",
+      "calc-task-009 release hardening + CI workflow"
+    ]
+  },
+  "failed_or_superseded_runs": [
+    {"run_id": "run_28b3ab86d62e", "agent": "glm-orchestrator", "status": "failed", "cause": "provider stream >120s (pre-timeout-raise)"},
+    {"run_id": "run_49c06bcf1152", "agent": "glm-orchestrator", "status": "failed", "cause": "provider stream >120s after writing task graph (pre-timeout-raise)"},
+    {"run_id": "run_6be865059cc0", "agent": "glm-orchestrator", "status": "completed-empty", "cause": "premature text-only turn ended loop before writing files"},
+    {"run_id": "run_29bcb1abfc89", "agent": "glm-orchestrator", "status": "failed", "cause": "write_file content passed as object not string; stream disconnect"},
+    {"run_id": "run_af50a11af338", "agent": "agy-frontend", "status": "failed", "cause": "HTTP 429 quota"},
+    {"run_id": "run_7b918783984c", "agent": "agy-frontend", "status": "failed", "cause": "HTTP 429 quota"}
+  ]
+}
