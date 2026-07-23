@@ -40,3 +40,7 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+
+# Sites build integration is source code; the repository root otherwise ignores build/.
+!/build/
+!/build/sites-vite-plugin.ts
