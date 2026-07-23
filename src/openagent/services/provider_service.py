@@ -43,6 +43,34 @@ if TYPE_CHECKING:
 #: How long a capability probe stays trusted before it must be re-run (spec §16).
 PROBE_CACHE_TTL = timedelta(hours=24)
 
+# --- Provider-add operation lifecycle (spec §6) -----------------------------------------------
+# A provider_add journal operation advances through these durable stages. Startup recovery
+# (:meth:`OpenAgentApp._recover_operations`) decides whether to keep or compensate a provider row
+# from the *stage*, never from the presence of the row alone: after ``commit()`` the DB row is
+# durable but the journal file lingers until it is unlinked, so a committed provider and a
+# crashed-mid-add provider are otherwise indistinguishable. See
+# docs/recovery-provider-transaction.md for the full state machine and why every ambiguity is
+# resolved in favour of preserving committed data.
+STAGE_BEGUN = "begun"
+STAGE_SECRET_WRITE_INTENT = "secret_write_intent"
+STAGE_SECRET_WRITTEN = "secret_written"
+STAGE_DB_WRITTEN = "db_written"
+STAGE_COMMIT_DURABLE = "commit_durable"
+STAGE_LEGACY_CLEANUP_PENDING = "legacy_cleanup_pending"
+STAGE_ROLLBACK_PENDING = "rollback_pending"
+STAGE_OWNED_COMPENSATION = "owned_compensation"
+STAGE_SUPERSEDED_GENERATION = "superseded_generation"
+STAGE_RECOVERY_AMBIGUOUS = "recovery_ambiguous"
+
+#: Stages that prove the transaction reached a durable commit. The provider row and its new
+#: revision-scoped credential MUST be preserved; recovery may only finish the (non-atomic)
+#: legacy-secret cleanup.
+PROVIDER_COMMIT_PROVEN_STAGES = frozenset({STAGE_COMMIT_DURABLE, STAGE_LEGACY_CLEANUP_PENDING})
+
+#: Stages that prove the transaction entered its rollback path. Its owned generation may be deleted,
+#: but only while the live row still belongs to that same generation.
+PROVIDER_ROLLBACK_PROVEN_STAGES = frozenset({STAGE_ROLLBACK_PENDING, STAGE_OWNED_COMPENSATION})
+
 
 class ProviderValidationError(ValueError):
     """A provider's credential configuration is invalid (missing key/env var, illegal 'none').
@@ -152,12 +180,35 @@ class ProviderTransaction:
         return self
 
     def commit(self) -> None:
-        """Mark the transaction durable and immediately forget the previous secret (§6.1)."""
+        """Mark the transaction durably committed, then best-effort clean the legacy secret (§6.1).
+
+        A committed provider row must survive *any* later failure, so the durable
+        ``commit_durable`` journal stage is written **before** the fallible legacy-credential
+        cleanup. Startup recovery keys off that marker and never mistakes a committed provider for an
+        incomplete add — the pre-fix code wrote no post-durability marker at all, so a committed
+        provider whose journal was not yet unlinked (a crash, or the legacy ``delete_secret`` below
+        raising) looked identical to a never-committed one and was deleted on the next start.
+
+        Legacy-credential cleanup is deliberately **not** part of the atomic commit. When it fails
+        the provider and its new revision-scoped credential are kept and the operation is left at
+        ``legacy_cleanup_pending`` for recovery/Doctor to retry; the leftover is the user's *old*
+        pre-revision secret, never the live one.
+        """
 
         self._committed = True
         self._forget()
+        if self._operation is not None:
+            self._operation.advance(STAGE_COMMIT_DURABLE)
         if self._legacy_credential is not None:
-            self._credentials.delete_secret(self._legacy_credential, strict=True)
+            try:
+                self._credentials.delete_secret(self._legacy_credential, strict=True)
+            except Exception:
+                # The provider is already durable; a failed legacy-secret cleanup must not undo it.
+                # Leave the operation pending at a stage recovery treats as "committed, finish the
+                # legacy cleanup", never as "roll back".
+                if self._operation is not None:
+                    self._operation.advance(STAGE_LEGACY_CLEANUP_PENDING)
+                return
         if self._operation is not None:
             self._operation.complete()
 
@@ -170,6 +221,11 @@ class ProviderTransaction:
         # Returns None → never suppresses the in-flight exception; an uncommitted transaction is
         # rolled back exactly (keychain restored, half-written provider row removed).
         if not self._committed:
+            # Durably record that this generation entered the rollback path *before* touching the
+            # keychain or the row. Recovery deletes an owned generation only on this proof; a bare
+            # ``db_written`` (a crash before __exit__ ever ran) stays ambiguous and is preserved.
+            if self._operation is not None:
+                self._operation.advance(STAGE_ROLLBACK_PENDING)
             restore_error: BaseException | None = None
             compensation_error: BaseException | None = None
             try:

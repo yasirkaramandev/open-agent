@@ -117,6 +117,14 @@ class OpenAgentApp:
             if operation.is_owned_by_live_other_process():
                 continue
             if operation.kind in {"provider_add", "provider_remove"}:
+                from .services.provider_service import (
+                    PROVIDER_COMMIT_PROVEN_STAGES,
+                    PROVIDER_ROLLBACK_PROVEN_STAGES,
+                    STAGE_LEGACY_CLEANUP_PENDING,
+                    STAGE_RECOVERY_AMBIGUOUS,
+                    STAGE_SUPERSEDED_GENERATION,
+                )
+
                 provider_id = str(operation.payload.get("provider_id") or "")
                 expected_revision = operation.payload.get("credential_revision")
                 if not isinstance(expected_revision, str) or not expected_revision.strip():
@@ -130,31 +138,77 @@ class OpenAgentApp:
                     else None
                 )
                 raw_ref = operation.payload.get("credential")
+                legacy_ref = operation.payload.get("legacy_credential")
                 try:
                     credential = (
                         CredentialRef.model_validate(raw_ref) if isinstance(raw_ref, dict) else None
                     )
                     if operation.kind == "provider_add":
-                        if current_revision == expected_revision and expected_revision:
-                            # A pending add never reached commit(): compensate only its generation.
-                            self.repos.providers.delete_owned_with_probes(
-                                provider_id, expected_revision
-                            )
-                            current_revision = None
-                        elif current_revision is not None and current_revision != expected_revision:
-                            operation.advance("superseded_generation")
-                        if current_revision is None and credential is not None:
-                            self.credentials.delete_secret(credential, strict=True)
-                    elif current_revision is None or (
+                        stage = operation.stage
+                        if stage in PROVIDER_COMMIT_PROVEN_STAGES:
+                            # Durably committed. The row and its new revision-scoped credential are
+                            # authoritative and must never be deleted; only the non-atomic
+                            # legacy-secret cleanup may still need finishing (the leftover is the
+                            # user's OLD pre-revision secret).
+                            operation.advance(STAGE_LEGACY_CLEANUP_PENDING)
+                            if isinstance(legacy_ref, dict):
+                                self.credentials.delete_secret(
+                                    CredentialRef.model_validate(legacy_ref), strict=True
+                                )
+                            operation.complete()
+                            continue
+                        if stage in PROVIDER_ROLLBACK_PROVEN_STAGES:
+                            # The transaction entered its rollback path: compensate only this
+                            # operation's own generation, and only while the live row still is it.
+                            if current_revision == expected_revision and expected_revision:
+                                self.repos.providers.delete_owned_with_probes(
+                                    provider_id, expected_revision
+                                )
+                                current_revision = None
+                            elif (
+                                current_revision is not None
+                                and current_revision != expected_revision
+                            ):
+                                operation.advance(STAGE_SUPERSEDED_GENERATION)
+                            if current_revision is None and credential is not None:
+                                self.credentials.delete_secret(credential, strict=True)
+                            operation.complete()
+                            continue
+                        # Ambiguous stage: a bare ``db_written`` (an interrupted commit or a crash
+                        # before __exit__ ran) or an unknown/legacy stage. We cannot prove the
+                        # transaction rolled back, so we must never delete a row that may be
+                        # committed. Fail-safe: preserve on any doubt.
+                        if current_revision is None:
+                            # No row: the add never became durable, or was already compensated.
+                            # Only this operation's own orphaned secret is safe to clean.
+                            if credential is not None:
+                                self.credentials.delete_secret(credential, strict=True)
+                            operation.complete()
+                            continue
+                        if expected_revision and current_revision != expected_revision:
+                            # A newer generation already owns this id — our operation is superseded.
+                            # Never touch the live newer row; clean only our own scoped secret.
+                            operation.advance(STAGE_SUPERSEDED_GENERATION)
+                            if credential is not None:
+                                self.credentials.delete_secret(credential, strict=True)
+                            operation.complete()
+                            continue
+                        # current_revision == expected_revision (or an unverifiable legacy entry
+                        # pointing at a live row): a committed provider and a crashed-before-commit
+                        # add are indistinguishable here. Preserve the row AND its credential; mark
+                        # the operation for Doctor instead of guessing. The legacy secret is left in
+                        # place too — deleting it could destroy the user's still-valid old key.
+                        operation.advance(STAGE_RECOVERY_AMBIGUOUS)
+                        continue
+
+                    # provider_remove: unchanged — the row's absence proves the remove committed.
+                    if current_revision is None or (
                         expected_revision and current_revision != expected_revision
                     ):
-                        # Remove already committed, or the id now belongs to a newer generation.
                         if current_revision is not None:
-                            operation.advance("superseded_generation")
+                            operation.advance(STAGE_SUPERSEDED_GENERATION)
                         if credential is not None:
                             self.credentials.delete_secret(credential, strict=True)
-
-                    legacy_ref = operation.payload.get("legacy_credential")
                     if current_revision == expected_revision and isinstance(legacy_ref, dict):
                         self.credentials.delete_secret(
                             CredentialRef.model_validate(legacy_ref), strict=True
