@@ -142,16 +142,12 @@ else
         || die "install-openagent" "this directory is not a git checkout" \
                "Set OPENAGENT_SETUP_LOCAL=1 to install from this directory instead."
     INSTALL_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-    # Fail closed unless this exact commit is reachable from the official repository. FETCH_HEAD is
-    # transient, so this verification never writes a persistent ref into the user's checkout.
-    reachable=0
-    for ref in main release-candidate; do
-        if git -C "$REPO_ROOT" fetch -q "$OFFICIAL_REMOTE" "$ref" 2>/dev/null \
-           && git -C "$REPO_ROOT" merge-base --is-ancestor "$INSTALL_COMMIT" FETCH_HEAD 2>/dev/null; then
-            reachable=1; break
-        fi
-    done
-    [ "$reachable" = "1" ] \
+    # Fail closed unless this exact commit exists in the official repository. GitHub serves any
+    # commit reachable from an advertised ref (any branch or tag), so fetching the SHA directly is a
+    # precise membership test: it succeeds for a commit pushed to any official branch and fails for a
+    # commit that was only ever local or lives in a fork (spec §20.3). It also never writes a
+    # persistent ref into the user's checkout.
+    git -C "$REPO_ROOT" fetch -q "$OFFICIAL_REMOTE" "$INSTALL_COMMIT" 2>/dev/null \
         || die "install-openagent" \
                "commit $INSTALL_COMMIT is not available from the official repository" \
                "Push it to an official branch first, or set OPENAGENT_SETUP_LOCAL=1 for a local install."

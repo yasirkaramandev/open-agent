@@ -66,9 +66,7 @@ def observe() -> dict:
         doctor_payload = json.loads(doctor_out)
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
-    doctor_exit = (
-        doctor_payload.get("exit_code") if isinstance(doctor_payload, dict) else None
-    )
+    doctor_exit = doctor_payload.get("exit_code") if isinstance(doctor_payload, dict) else None
     critical = []
     if version_rc != 0:
         critical.append("version command failed")

@@ -111,15 +111,11 @@ try {
             Fail "install-openagent" "this directory is not a git checkout" "Set OPENAGENT_SETUP_LOCAL=1 to install from this directory instead."
         }
         $InstallCommit = $InstallCommit.Trim()
-        $reachable = $false
-        foreach ($ref in @("main", "release-candidate")) {
-            & git -C $RepoRoot fetch -q $OfficialRemote $ref 2>$null
-            if ($LASTEXITCODE -eq 0) {
-                & git -C $RepoRoot merge-base --is-ancestor $InstallCommit FETCH_HEAD 2>$null
-                if ($LASTEXITCODE -eq 0) { $reachable = $true; break }
-            }
-        }
-        if (-not $reachable) {
+        # GitHub serves any commit reachable from an advertised ref, so fetching the SHA directly is
+        # a precise membership test for the official repository (spec §20.3): it succeeds for a
+        # commit on any official branch and fails for a local-only or fork commit.
+        & git -C $RepoRoot fetch -q $OfficialRemote $InstallCommit 2>$null
+        if ($LASTEXITCODE -ne 0) {
             Fail "install-openagent" "commit $InstallCommit is not available from the official repository" "Push it to an official branch first, or set OPENAGENT_SETUP_LOCAL=1 for a local install."
         }
         Write-Step "[3/6] Installing OpenAgent from official commit $InstallCommit ($InstallChannel channel)"
