@@ -4,7 +4,7 @@
   "branch": "example/opencalc-studio",
   "base_commit": "f5abf2666a41f5548c1ed4fe3bf5bcef91097aef",
   "provider": "z-ai/glm-5.2 (nvidia-build, openai-chat)",
-  "status": "engine + standard UI + scientific/history/memory/settings + PWA all GREEN and agent-authored. Remaining: QA (Playwright+axe), security review, docs, integration review.",
+  "status": "COMPLETE: engine, premium standard+scientific UI, history/memory/settings, offline PWA, QA (49 unit/component + 18 E2E x3 browsers + axe), security review (strict CSP, safe paste, 0 audit findings), documentation, and lint/format/CI - all authored by OpenAgent agent runs and operator-verified.",
   "tasks": [
     {
       "task_id": "calc-plan-001",
@@ -236,8 +236,30 @@
         "examples/opencalc-studio/docs/shortcuts.md"
       ],
       "verification": "operator ran: npm test 49 passed; typecheck clean; build ok. Docs accuracy spot-checked against source: shortcuts.md key list (Enter/Escape/Backspace/Delete/digits/operators/Ctrl+V paste/Tab) matches the actual key handling in src/ui/. 672 doc lines total.",
+      "reviewed_by": ["operator (gates + docs-vs-source accuracy spot check)"],
+      "status": "accepted"
+    },
+    {
+      "task_id": "calc-task-009",
+      "title": "lint + format + CI matrix (build/test + 3-browser E2E)",
+      "agent": "Sol (codex-cli, gpt-5.6-sol)",
+      "openagent_run_id": "run_5043b8c0f746",
+      "run_status": "completed",
+      "result_commit": "b8a2246baf92fefaf2e88c362f82516c378538c9",
+      "integration_commit": "merged into example/opencalc-studio",
+      "prompt_artifact": ".openagent/runs/run_5043b8c0f746/request.json",
+      "output_artifact": ".openagent/runs/run_5043b8c0f746/output.md",
+      "files_changed": [
+        ".github/workflows/opencalc-studio.yml",
+        "examples/opencalc-studio/eslint.config.js",
+        "examples/opencalc-studio/prettier.config.js",
+        "examples/opencalc-studio/.prettierignore",
+        "examples/opencalc-studio/package.json",
+        "(prettier reformat across src/, e2e/, docs/)"
+      ],
+      "verification": "operator verified the calculator-source changes are PURE prettier reflow (git diff -w shows only line-wrapping/union-collapsing; no logic change) and then ran the full gate set: format:check OK, lint 0 errors, typecheck clean, npm test 49 passed, npm run build success, npm audit --omit=dev 0 vulnerabilities, and `npx playwright test` 18 passed across chromium/firefox/webkit. CI workflow has build-test (ci/format/lint/typecheck/test/build/audit) and e2e (playwright install + 3-browser run + report artifact) jobs with a paths filter.",
       "reviewed_by": [
-        "operator (gates + docs-vs-source accuracy spot check)"
+        "operator (formatting-only diff proof + full gate set + E2E re-run)"
       ],
       "status": "accepted"
     }
