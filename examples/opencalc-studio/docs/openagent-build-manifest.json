@@ -4,7 +4,7 @@
   "branch": "example/opencalc-studio",
   "base_commit": "f5abf2666a41f5548c1ed4fe3bf5bcef91097aef",
   "provider": "z-ai/glm-5.2 (nvidia-build, openai-chat)",
-  "status": "engine GREEN (44/44 tests + typecheck clean) via calc-task-fix-001; UI/PWA/QA/security/docs still outstanding. Provider unblocked by upgrading codex CLI (GLM endpoint was timing out).",
+  "status": "engine + standard UI + scientific/history/memory/settings + PWA all GREEN and agent-authored. Remaining: QA (Playwright+axe), security review, docs, integration review.",
   "tasks": [
     {
       "task_id": "calc-plan-001",
@@ -21,7 +21,9 @@
         "examples/opencalc-studio/docs/architecture.md",
         "examples/opencalc-studio/docs/acceptance-criteria.md"
       ],
-      "reviewed_by": ["operator (json validity + structure verified)"],
+      "reviewed_by": [
+        "operator (json validity + structure verified)"
+      ],
       "status": "accepted"
     },
     {
@@ -48,7 +50,9 @@
         "examples/opencalc-studio/src/calculator/engine.test.ts"
       ],
       "verification": "operator ran `npm install && npx vitest run` (not modified): 43 passed / 1 failed (44 total)",
-      "reviewed_by": ["operator (vitest execution)"],
+      "reviewed_by": [
+        "operator (vitest execution)"
+      ],
       "known_issue": "engine.test.ts expects a trailing ')' to throw MismatchedParens; the agent's parser throws SyntaxError. RESOLVED by calc-task-fix-001.",
       "status": "accepted-with-known-issue (resolved by calc-task-fix-001)"
     },
@@ -71,7 +75,9 @@
       "verification": "operator ran (unmodified) `npm test` -> 44 passed / 0 failed (44 total); `npm run typecheck` -> clean. Diff scope verified: all changes within examples/opencalc-studio/src/calculator/.",
       "resolves": "calc-task-001 known_issue (trailing ')' now throws typed MismatchedParens) and the 5 TS18048/TS2345 'possibly undefined' errors in scientific.ts.",
       "provider_note": "GLM (z-ai/glm-5.2 via nvidia-build) endpoint was timing out (4-min no-response). Codex CLI was upgraded 0.142.5 -> 0.145.0 via `openagent cli update codex` so the account's gpt-5.6-sol model is supported; this task ran on the codex Sol agent.",
-      "reviewed_by": ["operator (diff-scope review + npm test + npm run typecheck)"],
+      "reviewed_by": [
+        "operator (diff-scope review + npm test + npm run typecheck)"
+      ],
       "status": "accepted"
     },
     {
@@ -103,7 +109,9 @@
       ],
       "verification": "operator ran (unmodified): npm test -> 44/44; npm run typecheck -> clean; npm run build -> success (dist/ produced, 44 modules). LIVE browser check via vite preview: UI renders premium calculator; computed 7 x 8 = 56 correctly; all buttons carry screen-reader aria-labels (Seven, Multiply, Equals, ...); light/system/dark theme toggle present.",
       "provider_note": "codex Sol agent (gpt-5.6-sol) after codex CLI upgrade; wired to existing engine in src/calculator/ (no math reimplemented).",
-      "reviewed_by": ["operator (diff-scope review + npm test/typecheck/build + live browser functional + a11y check)"],
+      "reviewed_by": [
+        "operator (diff-scope review + npm test/typecheck/build + live browser functional + a11y check)"
+      ],
       "status": "accepted"
     },
     {
@@ -133,7 +141,36 @@
       ],
       "verification": "operator ran (unmodified): npm test -> 44/44; npm run typecheck -> clean; npm run build -> success. LIVE browser check: STD/SCI toggle works; SCI mode shows DEG/RAD toggle + scientific grid (sin/cos/tan/asin/acos/atan/ln/log/sqrt/x^2/x^y/1/x/x!/pi/e); memory row MC/MR/M+/M-/MS present with aria-labels; History button ('Open history, N entries') and Settings gear present; header reflects settings (decimal places).",
       "provider_note": "codex Sol agent (gpt-5.6-sol); wired to existing engine scientific.ts; no math reimplemented.",
-      "reviewed_by": ["operator (diff-scope review + npm test/typecheck/build + live browser SCI/history/settings + a11y check)"],
+      "reviewed_by": [
+        "operator (diff-scope review + npm test/typecheck/build + live browser SCI/history/settings + a11y check)"
+      ],
+      "status": "accepted"
+    },
+    {
+      "task_id": "calc-task-005",
+      "title": "offline PWA (manifest + service worker + icons)",
+      "agent": "Sol (codex-cli, gpt-5.6-sol)",
+      "openagent_run_id": "run_5f864b41af99",
+      "run_status": "completed",
+      "result_commit": "840e003816688302c5613666875e50790692f29d",
+      "integration_commit": "840e003816688302c5613666875e50790692f29d (fast-forward)",
+      "prompt_artifact": ".openagent/runs/run_5f864b41af99/request.json",
+      "output_artifact": ".openagent/runs/run_5f864b41af99/output.md",
+      "files_changed": [
+        "examples/opencalc-studio/vite.config.ts",
+        "examples/opencalc-studio/src/pwa.ts",
+        "examples/opencalc-studio/src/ui/PwaUpdatePrompt.tsx",
+        "examples/opencalc-studio/src/main.tsx",
+        "examples/opencalc-studio/index.html",
+        "examples/opencalc-studio/public/ (icons)",
+        "examples/opencalc-studio/scripts/generate-pwa-icons.mjs",
+        "examples/opencalc-studio/package.json"
+      ],
+      "verification": "operator ran (unmodified): npm test 44/44; typecheck clean; npm run build -> success with vite-plugin-pwa precache 13 entries (204 KiB). dist/ contains manifest.webmanifest, sw.js, workbox-*.js, and icons/. Calculations are pure client-side (engine) so work offline.",
+      "provider_note": "codex Sol agent; used vite-plugin-pwa (workbox) for versioned SW + manifest.",
+      "reviewed_by": [
+        "operator (diff-scope + npm test/typecheck/build + dist PWA-artifact verification)"
+      ],
       "status": "accepted"
     }
   ],
@@ -151,11 +188,41 @@
     ]
   },
   "failed_or_superseded_runs": [
-    {"run_id": "run_28b3ab86d62e", "agent": "glm-orchestrator", "status": "failed", "cause": "provider stream >120s (pre-timeout-raise)"},
-    {"run_id": "run_49c06bcf1152", "agent": "glm-orchestrator", "status": "failed", "cause": "provider stream >120s after writing task graph (pre-timeout-raise)"},
-    {"run_id": "run_6be865059cc0", "agent": "glm-orchestrator", "status": "completed-empty", "cause": "premature text-only turn ended loop before writing files"},
-    {"run_id": "run_29bcb1abfc89", "agent": "glm-orchestrator", "status": "failed", "cause": "write_file content passed as object not string; stream disconnect"},
-    {"run_id": "run_af50a11af338", "agent": "agy-frontend", "status": "failed", "cause": "HTTP 429 quota"},
-    {"run_id": "run_7b918783984c", "agent": "agy-frontend", "status": "failed", "cause": "HTTP 429 quota"}
+    {
+      "run_id": "run_28b3ab86d62e",
+      "agent": "glm-orchestrator",
+      "status": "failed",
+      "cause": "provider stream >120s (pre-timeout-raise)"
+    },
+    {
+      "run_id": "run_49c06bcf1152",
+      "agent": "glm-orchestrator",
+      "status": "failed",
+      "cause": "provider stream >120s after writing task graph (pre-timeout-raise)"
+    },
+    {
+      "run_id": "run_6be865059cc0",
+      "agent": "glm-orchestrator",
+      "status": "completed-empty",
+      "cause": "premature text-only turn ended loop before writing files"
+    },
+    {
+      "run_id": "run_29bcb1abfc89",
+      "agent": "glm-orchestrator",
+      "status": "failed",
+      "cause": "write_file content passed as object not string; stream disconnect"
+    },
+    {
+      "run_id": "run_af50a11af338",
+      "agent": "agy-frontend",
+      "status": "failed",
+      "cause": "HTTP 429 quota"
+    },
+    {
+      "run_id": "run_7b918783984c",
+      "agent": "agy-frontend",
+      "status": "failed",
+      "cause": "HTTP 429 quota"
+    }
   ]
 }
