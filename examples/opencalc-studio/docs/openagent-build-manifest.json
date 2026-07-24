@@ -172,6 +172,31 @@
         "operator (diff-scope + npm test/typecheck/build + dist PWA-artifact verification)"
       ],
       "status": "accepted"
+    },
+    {
+      "task_id": "calc-task-006",
+      "title": "QA: component + Playwright (chromium/firefox/webkit) + axe accessibility",
+      "agent": "Sol (codex-cli, gpt-5.6-sol)",
+      "openagent_run_id": "run_84f9de36ba9e",
+      "run_status": "completed",
+      "result_commit": "4744453e7d24eea95966c0c2f17b4507619fd917",
+      "integration_commit": "4744453e7d24eea95966c0c2f17b4507619fd917 (fast-forward)",
+      "prompt_artifact": ".openagent/runs/run_84f9de36ba9e/request.json",
+      "output_artifact": ".openagent/runs/run_84f9de36ba9e/output.md",
+      "files_changed": [
+        "examples/opencalc-studio/playwright.config.ts",
+        "examples/opencalc-studio/e2e/calculator.spec.ts",
+        "examples/opencalc-studio/e2e/accessibility.spec.ts",
+        "examples/opencalc-studio/src/ui/Calculator.test.tsx",
+        "examples/opencalc-studio/vitest.config.ts",
+        "examples/opencalc-studio/package.json"
+      ],
+      "verification": "operator ran (unmodified): npm test -> 49 passed (44 engine + 5 component); npm run typecheck -> clean; npm run build -> success; `npx playwright test` -> 18 passed across chromium(6)/firefox(6)/webkit(6), including axe 'no serious/critical accessibility violations' on all 3 browsers, keyboard-only entry, history reuse, and mobile-viewport usability. Browsers installed by the agent via `npx playwright install`.",
+      "provider_note": "codex Sol agent (agy-qa would use the timing-out GLM API).",
+      "reviewed_by": [
+        "operator (diff-scope + npm test/typecheck/build + INDEPENDENT `npx playwright test` run across 3 browsers)"
+      ],
+      "status": "accepted"
     }
   ],
   "not_completed": {
