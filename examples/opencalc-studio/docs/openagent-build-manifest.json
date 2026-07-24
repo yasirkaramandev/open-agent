@@ -4,7 +4,7 @@
   "branch": "example/opencalc-studio",
   "base_commit": "f5abf2666a41f5548c1ed4fe3bf5bcef91097aef",
   "provider": "z-ai/glm-5.2 (nvidia-build, openai-chat)",
-  "status": "partial — engine + plan delivered; UI/PWA/QA/security/docs blocked by provider quota exhaustion",
+  "status": "engine GREEN (44/44 tests + typecheck clean) via calc-task-fix-001; UI/PWA/QA/security/docs still outstanding. Provider unblocked by upgrading codex CLI (GLM endpoint was timing out).",
   "tasks": [
     {
       "task_id": "calc-plan-001",
@@ -49,8 +49,30 @@
       ],
       "verification": "operator ran `npm install && npx vitest run` (not modified): 43 passed / 1 failed (44 total)",
       "reviewed_by": ["operator (vitest execution)"],
-      "known_issue": "engine.test.ts expects a trailing ')' to throw MismatchedParens; the agent's parser throws SyntaxError. A follow-up agy-frontend fix run (run_af50a11af338, run_7b918783984c) was attempted but blocked by provider quota (429).",
-      "status": "accepted-with-known-issue"
+      "known_issue": "engine.test.ts expects a trailing ')' to throw MismatchedParens; the agent's parser throws SyntaxError. RESOLVED by calc-task-fix-001.",
+      "status": "accepted-with-known-issue (resolved by calc-task-fix-001)"
+    },
+    {
+      "task_id": "calc-task-fix-001",
+      "agent": "Sol (codex-cli, gpt-5.6-sol)",
+      "openagent_run_id": "run_c342f8b000ae",
+      "run_status": "completed",
+      "base_commit": "2a60aa38a0a2ff91d50d9c3de95e07dab2e41043",
+      "result_commit": "b9c13cfeb44e6a15d4343a46f8005a0f8c57e745",
+      "integration_commit": "b9c13cfeb44e6a15d4343a46f8005a0f8c57e745 (fast-forward into example/opencalc-studio)",
+      "prompt_artifact": ".openagent/runs/run_c342f8b000ae/request.json",
+      "output_artifact": ".openagent/runs/run_c342f8b000ae/output.md",
+      "files_changed": [
+        "examples/opencalc-studio/src/calculator/parser.ts",
+        "examples/opencalc-studio/src/calculator/types.ts",
+        "examples/opencalc-studio/src/calculator/evaluator.ts",
+        "examples/opencalc-studio/src/calculator/scientific.ts"
+      ],
+      "verification": "operator ran (unmodified) `npm test` -> 44 passed / 0 failed (44 total); `npm run typecheck` -> clean. Diff scope verified: all changes within examples/opencalc-studio/src/calculator/.",
+      "resolves": "calc-task-001 known_issue (trailing ')' now throws typed MismatchedParens) and the 5 TS18048/TS2345 'possibly undefined' errors in scientific.ts.",
+      "provider_note": "GLM (z-ai/glm-5.2 via nvidia-build) endpoint was timing out (4-min no-response). Codex CLI was upgraded 0.142.5 -> 0.145.0 via `openagent cli update codex` so the account's gpt-5.6-sol model is supported; this task ran on the codex Sol agent.",
+      "reviewed_by": ["operator (diff-scope review + npm test + npm run typecheck)"],
+      "status": "accepted"
     }
   ],
   "not_completed": {
