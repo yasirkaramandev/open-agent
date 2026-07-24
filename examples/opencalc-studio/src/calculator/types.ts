@@ -150,12 +150,7 @@ export interface Token {
 
 /** Discriminator label for an AST node. */
 export type NodeKind =
-  | 'num'
-  | 'binop'
-  | 'unary'
-  | 'call'
-  | 'constant'
-  | 'factorial';
+  'num' | 'binop' | 'unary' | 'call' | 'constant' | 'factorial';
 
 /** Numeric literal. */
 export interface NumNode {
@@ -199,12 +194,7 @@ export interface FactorialNode {
 
 /** Root AST node union. */
 export type Node =
-  | NumNode
-  | BinopNode
-  | UnaryNode
-  | CallNode
-  | ConstantNode
-  | FactorialNode;
+  NumNode | BinopNode | UnaryNode | CallNode | ConstantNode | FactorialNode;
 
 /** Options consumed by `format`. Only here may locale be applied. */
 export interface FormatOptions {

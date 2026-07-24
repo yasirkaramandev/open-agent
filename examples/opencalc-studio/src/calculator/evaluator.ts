@@ -17,10 +17,7 @@
  * while still working for computed/hyperbolic values that have no source.
  */
 
-import {
-  constantValue,
-  getScientificFn,
-} from './scientific';
+import { constantValue, getScientificFn } from './scientific';
 import {
   decimalAdd,
   decimalDivide,
@@ -51,8 +48,16 @@ export const DEFAULT_CONTEXT: EvalContext = {
 };
 
 /** Evaluate an AST under the given context, returning a canonical number. */
-export function evaluate(node: Node, ctx: EvalContext = DEFAULT_CONTEXT): number {
-  return evalNode(node, ctx, 0, ctx.maxNodeDepth || DEFAULT_CONTEXT.maxNodeDepth);
+export function evaluate(
+  node: Node,
+  ctx: EvalContext = DEFAULT_CONTEXT,
+): number {
+  return evalNode(
+    node,
+    ctx,
+    0,
+    ctx.maxNodeDepth || DEFAULT_CONTEXT.maxNodeDepth,
+  );
 }
 
 function evalNode(
@@ -70,7 +75,8 @@ function evalNode(
 
     case 'constant': {
       const v = constantValue(node.name);
-      if (v === undefined) throw new SyntaxError(`unknown constant "${node.name}"`);
+      if (v === undefined)
+        throw new SyntaxError(`unknown constant "${node.name}"`);
       return v;
     }
 
@@ -106,10 +112,7 @@ function evalNode(
         return factorial(op);
       } catch (e) {
         // Re-throw the typed errors from decimal.factoial unchanged.
-        if (
-          e instanceof InvalidFactorial ||
-          e instanceof Overflow
-        ) throw e;
+        if (e instanceof InvalidFactorial || e instanceof Overflow) throw e;
         throw new InvalidFactorial(`invalid factorial operand: ${op}`);
       }
     }
@@ -180,14 +183,18 @@ function powOp(
   }
   // 0^0 is defined as 1 by convention here.
   if (base === 0 && exp === 0) return 1;
-  if (base === 0 && exp < 0) throw new DivisionByZero('0 raised to a negative power');
+  if (base === 0 && exp < 0)
+    throw new DivisionByZero('0 raised to a negative power');
   const r = Math.pow(base, exp);
   guardFinite(r, '^');
   return r;
 }
 
 /** Pick a DecimalRep, preferring a NumNode's source literal for exactness. */
-function toRep(node: Node, fallbackValue: number): ReturnType<typeof numberToDecimal> {
+function toRep(
+  node: Node,
+  fallbackValue: number,
+): ReturnType<typeof numberToDecimal> {
   if (node.kind === 'num') {
     const src = numNodeSource(node as NumNode);
     if (src !== undefined) return parseDecimal(src);
@@ -264,7 +271,8 @@ function applySep(
   if (/[eE]/.test(raw)) {
     return raw; // scientific form bypasses grouping
   }
-  let [intPart = '', fracPart = ''] = raw.split('.');
+  const [rawIntPart = '', fracPart = ''] = raw.split('.');
+  let intPart = rawIntPart;
   let sign = '';
   if (intPart.startsWith('-')) {
     sign = '-';
@@ -274,9 +282,7 @@ function applySep(
     intPart = groupInteger(intPart, groupSeparator);
   }
   const withDec = fracPart === '' ? intPart : `${intPart}.${fracPart}`;
-  const result = decimalSeparator === ','
-    ? withDec.replace('.', ',')
-    : withDec;
+  const result = decimalSeparator === ',' ? withDec.replace('.', ',') : withDec;
   return `${sign}${result}`;
 }
 

@@ -13,10 +13,7 @@
 import { evaluate, format, DEFAULT_CONTEXT } from './evaluator';
 import { parse } from './parser';
 import { tokenize } from './tokenizer';
-import {
-  type EvalContext,
-  type FormatOptions,
-} from './types';
+import { type EvalContext, type FormatOptions } from './types';
 
 export type { EvalContext, FormatOptions };
 

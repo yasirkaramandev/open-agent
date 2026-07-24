@@ -35,9 +35,7 @@ test('supports keyboard-only entry and Enter', async ({ page }) => {
 test('reuses a calculation from history', async ({ page }) => {
   await page.locator('body').pressSequentially('2+3', { delay: 50 });
   await page.keyboard.press('Enter');
-  await page
-    .getByRole('button', { name: 'Open history, 1 entries' })
-    .click();
+  await page.getByRole('button', { name: 'Open history, 1 entries' }).click();
   await page.getByRole('button', { name: 'Reuse 2 + 3' }).click();
 
   await expect(page.getByLabel('Expression: 2 + 3')).toBeVisible();

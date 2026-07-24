@@ -4,10 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 import App from '../App';
 import { Calculator } from './Calculator';
-import {
-  DEFAULT_SETTINGS,
-  type CalculatorSettings,
-} from './settings';
+import { DEFAULT_SETTINGS, type CalculatorSettings } from './settings';
 
 function CalculatorHarness() {
   const [settings, setSettings] =

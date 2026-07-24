@@ -102,10 +102,7 @@ function messageForError(error: unknown) {
   return 'Unable to calculate';
 }
 
-export function Calculator({
-  settings,
-  onSettingsChange,
-}: CalculatorProps) {
+export function Calculator({ settings, onSettingsChange }: CalculatorProps) {
   const [parts, setParts] = useState<string[]>([]);
   const [entry, setEntry] = useState('0');
   const [entryToken, setEntryToken] = useState('0');
@@ -122,8 +119,16 @@ export function Calculator({
     null,
   );
   const keyTimer = useRef<number | null>(null);
-  const { entries, addEntry, removeEntry, clearEntries } =
-    useCalculatorHistory(settings.privateMode);
+  const { entries, addEntry, removeEntry, clearEntries } = useCalculatorHistory(
+    settings.privateMode,
+  );
+  const handleSettingsChange = useCallback(
+    (updates: Partial<CalculatorSettings>) => {
+      if (updates.privateMode === true) clearEntries();
+      onSettingsChange(updates);
+    },
+    [clearEntries, onSettingsChange],
+  );
 
   const clearAll = useCallback(() => {
     setParts([]);
@@ -559,7 +564,11 @@ export function Calculator({
         </div>
 
         <div className="calculator-toolbar">
-          <div className="mode-toggle" role="group" aria-label="Calculator mode">
+          <div
+            className="mode-toggle"
+            role="group"
+            aria-label="Calculator mode"
+          >
             {(['STD', 'SCI'] as const).map((calculatorMode) => (
               <button
                 type="button"
@@ -633,7 +642,9 @@ export function Calculator({
               type="button"
               key={action}
               aria-label={label}
-              disabled={memory === null && (action === 'clear' || action === 'recall')}
+              disabled={
+                memory === null && (action === 'clear' || action === 'recall')
+              }
               onClick={() => handleMemory(action)}
             >
               {visual}
@@ -661,7 +672,7 @@ export function Calculator({
         open={openPanel === 'settings'}
         settings={settings}
         onClose={() => setOpenPanel(null)}
-        onChange={onSettingsChange}
+        onChange={handleSettingsChange}
       />
     </>
   );

@@ -15,20 +15,14 @@
  * imports nothing from the DOM or React.
  */
 
-import {
-  DivisionByZero,
-  DomainError,
-  InvalidFactorial,
-  Overflow,
-  type AngleMode,
-} from './types';
+import { DivisionByZero, DomainError, Overflow, type AngleMode } from './types';
 import { factorial } from './decimal';
 
 /** Deg→rad and rad→deg conversion factors. */
 const DEG_TO_RAD = Math.PI / 180;
 
 /** Convert an angle input to radians per the active mode. */
-function toRadians(angle: number, mode: AngleMode, fnName: string): number {
+function toRadians(angle: number, mode: AngleMode): number {
   return mode === 'DEG' ? angle * DEG_TO_RAD : angle;
 }
 
@@ -61,16 +55,16 @@ function unaryArg(args: number[], fnName: string): number {
 
 function sin(args: number[], ctx: { angleMode: AngleMode }): number {
   const x = unaryArg(args, 'sin');
-  return Math.sin(toRadians(x, ctx.angleMode, 'sin'));
+  return Math.sin(toRadians(x, ctx.angleMode));
 }
 function cos(args: number[], ctx: { angleMode: AngleMode }): number {
   const x = unaryArg(args, 'cos');
-  return Math.cos(toRadians(x, ctx.angleMode, 'cos'));
+  return Math.cos(toRadians(x, ctx.angleMode));
 }
 function tan(args: number[], ctx: { angleMode: AngleMode }): number {
   const x = unaryArg(args, 'tan');
   // tan(90deg) / tan(pi/2) is an asymptote; detect and fail closed.
-  const r = toRadians(x, ctx.angleMode, 'tan');
+  const r = toRadians(x, ctx.angleMode);
   if (Math.abs(Math.cos(r)) < 1e-15) {
     throw new DivisionByZero('tan(angle) undefined (asymptote)');
   }

@@ -2,8 +2,10 @@ import type { ButtonHTMLAttributes, ReactNode } from 'react';
 
 type ButtonTone = 'number' | 'utility' | 'operator' | 'equals';
 
-interface CalculatorButtonProps
-  extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'children'> {
+interface CalculatorButtonProps extends Omit<
+  ButtonHTMLAttributes<HTMLButtonElement>,
+  'children'
+> {
   label: string;
   children: ReactNode;
   tone?: ButtonTone;

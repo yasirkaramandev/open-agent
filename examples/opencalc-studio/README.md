@@ -63,17 +63,17 @@ context for local preview.
 
 ## Scripts
 
-| Command | Purpose |
-| --- | --- |
-| `npm run dev` | Start the Vite development server. |
-| `npm run build` | Type-check the project build and create the production bundle in `dist/`. |
-| `npm run preview` | Serve the existing production bundle locally with Vite Preview. |
-| `npm test` | Run all engine and React component tests once with Vitest. |
-| `npm run test:components` | Run the React UI test files only. |
-| `npm run test:watch` | Run Vitest in watch mode. |
-| `npm run test:e2e` | Build and preview the app, then run Playwright tests in Chromium, Firefox, and WebKit. |
-| `npm run typecheck` | Run strict TypeScript checking without emitting files. |
-| `npm run generate:icons` | Regenerate the 192 px, 512 px, and maskable PWA PNG icons. |
+| Command                   | Purpose                                                                                |
+| ------------------------- | -------------------------------------------------------------------------------------- |
+| `npm run dev`             | Start the Vite development server.                                                     |
+| `npm run build`           | Type-check the project build and create the production bundle in `dist/`.              |
+| `npm run preview`         | Serve the existing production bundle locally with Vite Preview.                        |
+| `npm test`                | Run all engine and React component tests once with Vitest.                             |
+| `npm run test:components` | Run the React UI test files only.                                                      |
+| `npm run test:watch`      | Run Vitest in watch mode.                                                              |
+| `npm run test:e2e`        | Build and preview the app, then run Playwright tests in Chromium, Firefox, and WebKit. |
+| `npm run typecheck`       | Run strict TypeScript checking without emitting files.                                 |
+| `npm run generate:icons`  | Regenerate the 192 px, 512 px, and maskable PWA PNG icons.                             |
 
 Playwright browser binaries must be installed before the first end-to-end run
 if they are not already available:
@@ -87,20 +87,20 @@ npx playwright install
 Calculator shortcuts apply when focus is not inside a button, link, or form
 control. Focused controls retain their normal browser keyboard behavior.
 
-| Key | Action |
-| --- | --- |
-| `0`–`9` | Enter a digit. |
-| `.` or `,` | Enter a decimal point. |
-| `+` | Add. |
-| `-` | Subtract. |
-| `*`, `x`, or `X` | Multiply. |
-| `/` | Divide. |
-| `^` | Raise to a power. |
-| `%` | Apply percent to the current entry. |
-| `Enter` or `=` | Evaluate the expression. |
-| `Escape` | Clear all; if History or Settings is open, close that panel instead. |
-| `Delete` | Clear the current entry. |
-| `Backspace` | Delete the last digit or step back to the preceding entry. |
+| Key              | Action                                                               |
+| ---------------- | -------------------------------------------------------------------- |
+| `0`–`9`          | Enter a digit.                                                       |
+| `.` or `,`       | Enter a decimal point.                                               |
+| `+`              | Add.                                                                 |
+| `-`              | Subtract.                                                            |
+| `*`, `x`, or `X` | Multiply.                                                            |
+| `/`              | Divide.                                                              |
+| `^`              | Raise to a power.                                                    |
+| `%`              | Apply percent to the current entry.                                  |
+| `Enter` or `=`   | Evaluate the expression.                                             |
+| `Escape`         | Clear all; if History or Settings is open, close that panel instead. |
+| `Delete`         | Clear the current entry.                                             |
+| `Backspace`      | Delete the last digit or step back to the preceding entry.           |
 
 `Tab` and `Shift+Tab` move through controls, while `Enter` or `Space` activates
 the focused control using standard browser behavior. There are no direct
@@ -117,11 +117,11 @@ end-to-end suite runs against Playwright's desktop Chromium, Firefox, and
 WebKit projects; it also covers keyboard operation, a mobile-sized viewport,
 and an axe accessibility scan.
 
-| Engine tested | Coverage |
-| --- | --- |
-| Chromium | Calculation, persistence, keyboard input, responsive layout, and accessibility. |
-| Firefox | The same Playwright end-to-end scenarios as Chromium. |
-| WebKit | The same scenarios using Playwright's desktop Safari profile. |
+| Engine tested | Coverage                                                                        |
+| ------------- | ------------------------------------------------------------------------------- |
+| Chromium      | Calculation, persistence, keyboard input, responsive layout, and accessibility. |
+| Firefox       | The same Playwright end-to-end scenarios as Chromium.                           |
+| WebKit        | The same scenarios using Playwright's desktop Safari profile.                   |
 
 Core calculation works without PWA APIs. Installation and offline launch
 require a browser with Web App Manifest and service-worker support and a secure

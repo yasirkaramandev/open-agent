@@ -21,9 +21,7 @@
         "examples/opencalc-studio/docs/architecture.md",
         "examples/opencalc-studio/docs/acceptance-criteria.md"
       ],
-      "reviewed_by": [
-        "operator (json validity + structure verified)"
-      ],
+      "reviewed_by": ["operator (json validity + structure verified)"],
       "status": "accepted"
     },
     {
@@ -50,9 +48,7 @@
         "examples/opencalc-studio/src/calculator/engine.test.ts"
       ],
       "verification": "operator ran `npm install && npx vitest run` (not modified): 43 passed / 1 failed (44 total)",
-      "reviewed_by": [
-        "operator (vitest execution)"
-      ],
+      "reviewed_by": ["operator (vitest execution)"],
       "known_issue": "engine.test.ts expects a trailing ')' to throw MismatchedParens; the agent's parser throws SyntaxError. RESOLVED by calc-task-fix-001.",
       "status": "accepted-with-known-issue (resolved by calc-task-fix-001)"
     },

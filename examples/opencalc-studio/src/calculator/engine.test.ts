@@ -41,7 +41,8 @@ describe('OpenCalc Studio engine', () => {
     });
 
     it('large integer arithmetic stays exact', () => {
-      expect(compute('9007199254740993 + 2').value).toBe(9007199254740995);
+      const expected = Number(9_007_199_254_740_995n);
+      expect(compute('9007199254740993 + 2').value).toBe(expected);
     });
   });
 
@@ -106,7 +107,10 @@ describe('OpenCalc Studio engine', () => {
     });
 
     it('asin(1) in DEG = 90', () => {
-      expect(compute('asin(1)', { angleMode: 'DEG' }).value).toBeCloseTo(90, 10);
+      expect(compute('asin(1)', { angleMode: 'DEG' }).value).toBeCloseTo(
+        90,
+        10,
+      );
     });
 
     it('log10(1000) = 3', () => {
@@ -162,7 +166,9 @@ describe('OpenCalc Studio engine', () => {
     });
 
     it('asin(2) throws DomainError', () => {
-      expect(() => compute('asin(2)', { angleMode: 'DEG' })).toThrow(DomainError);
+      expect(() => compute('asin(2)', { angleMode: 'DEG' })).toThrow(
+        DomainError,
+      );
     });
 
     it('0.5! throws InvalidFactorial', () => {
@@ -204,7 +210,11 @@ describe('OpenCalc Studio engine', () => {
   /* ----------------------- pipeline & format ------------------- */
   describe('pipeline and formatting', () => {
     it('tokenize/parse/evaluate compose correctly', () => {
-      const v = evaluate(parse(tokenize('3 * (1 + 2)')), { angleMode: 'RAD', precision: 12, maxNodeDepth: 256 });
+      const v = evaluate(parse(tokenize('3 * (1 + 2)')), {
+        angleMode: 'RAD',
+        precision: 12,
+        maxNodeDepth: 256,
+      });
       expect(v).toBe(9);
     });
 

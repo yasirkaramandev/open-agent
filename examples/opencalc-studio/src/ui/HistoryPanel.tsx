@@ -56,7 +56,9 @@ export function HistoryPanel({
             Private mode is on. New calculations are not saved.
           </p>
         ) : entries.length === 0 ? (
-          <p className="panel-empty">Completed calculations will appear here.</p>
+          <p className="panel-empty">
+            Completed calculations will appear here.
+          </p>
         ) : (
           <>
             <ol className="history-list">

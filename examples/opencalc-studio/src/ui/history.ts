@@ -59,7 +59,9 @@ function readHistory(): HistoryEntry[] {
 }
 
 export function useCalculatorHistory(privateMode: boolean) {
-  const [entries, setEntries] = useState<HistoryEntry[]>(readHistory);
+  const [entries, setEntries] = useState<HistoryEntry[]>(() =>
+    privateMode ? [] : readHistory(),
+  );
   const sequence = useRef(0);
 
   useEffect(() => {
@@ -67,7 +69,6 @@ export function useCalculatorHistory(privateMode: boolean) {
     try {
       if (privateMode) {
         window.localStorage.removeItem(STORAGE_KEY);
-        if (entries.length > 0) setEntries([]);
       } else {
         const stored: StoredHistory = {
           version: HISTORY_VERSION,
