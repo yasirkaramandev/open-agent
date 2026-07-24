@@ -73,6 +73,38 @@
       "provider_note": "GLM (z-ai/glm-5.2 via nvidia-build) endpoint was timing out (4-min no-response). Codex CLI was upgraded 0.142.5 -> 0.145.0 via `openagent cli update codex` so the account's gpt-5.6-sol model is supported; this task ran on the codex Sol agent.",
       "reviewed_by": ["operator (diff-scope review + npm test + npm run typecheck)"],
       "status": "accepted"
+    },
+    {
+      "task_id": "calc-task-003",
+      "title": "premium standard calculator UI (React + Vite)",
+      "agent": "Sol (codex-cli, gpt-5.6-sol)",
+      "openagent_run_id": "run_6b0c03761868",
+      "run_status": "completed",
+      "base_commit": "b9c13cfeb44e6a15d4343a46f8005a0f8c57e745",
+      "result_commit": "a452131fb9a64765bbb008f2fc9a599b10922975",
+      "integration_commit": "a452131fb9a64765bbb008f2fc9a599b10922975 (fast-forward into example/opencalc-studio)",
+      "prompt_artifact": ".openagent/runs/run_6b0c03761868/request.json",
+      "output_artifact": ".openagent/runs/run_6b0c03761868/output.md",
+      "files_changed": [
+        "examples/opencalc-studio/index.html",
+        "examples/opencalc-studio/vite.config.ts",
+        "examples/opencalc-studio/src/main.tsx",
+        "examples/opencalc-studio/src/App.tsx",
+        "examples/opencalc-studio/src/ui/Calculator.tsx",
+        "examples/opencalc-studio/src/ui/Keypad.tsx",
+        "examples/opencalc-studio/src/ui/Display.tsx",
+        "examples/opencalc-studio/src/ui/CalculatorButton.tsx",
+        "examples/opencalc-studio/src/ui/ThemeControl.tsx",
+        "examples/opencalc-studio/src/ui/useTheme.ts",
+        "examples/opencalc-studio/src/ui/styles.css",
+        "examples/opencalc-studio/package.json",
+        "examples/opencalc-studio/tsconfig.json",
+        "examples/opencalc-studio/.gitignore"
+      ],
+      "verification": "operator ran (unmodified): npm test -> 44/44; npm run typecheck -> clean; npm run build -> success (dist/ produced, 44 modules). LIVE browser check via vite preview: UI renders premium calculator; computed 7 x 8 = 56 correctly; all buttons carry screen-reader aria-labels (Seven, Multiply, Equals, ...); light/system/dark theme toggle present.",
+      "provider_note": "codex Sol agent (gpt-5.6-sol) after codex CLI upgrade; wired to existing engine in src/calculator/ (no math reimplemented).",
+      "reviewed_by": ["operator (diff-scope review + npm test/typecheck/build + live browser functional + a11y check)"],
+      "status": "accepted"
     }
   ],
   "not_completed": {
