@@ -262,6 +262,34 @@
         "operator (formatting-only diff proof + full gate set + E2E re-run)"
       ],
       "status": "accepted"
+    },
+    {
+      "task_id": "calc-task-010",
+      "title": "final integration review (VERDICT: SHIP)",
+      "agent": "Sol (codex-cli, gpt-5.6-sol)",
+      "openagent_run_id": "run_a097d4abb523",
+      "run_status": "completed",
+      "result_commit": "33cf452401779fc8005e81dc88cf96a4d1747765",
+      "integration_commit": "merged into example/opencalc-studio",
+      "prompt_artifact": ".openagent/runs/run_a097d4abb523/request.json",
+      "output_artifact": ".openagent/runs/run_a097d4abb523/output.md",
+      "files_changed": [
+        "examples/opencalc-studio/docs/integration-review.md",
+        "examples/opencalc-studio/src/calculator/tokenizer.ts",
+        "examples/opencalc-studio/src/calculator/decimal.ts",
+        "examples/opencalc-studio/src/calculator/index.ts",
+        "examples/opencalc-studio/src/calculator/engine.test.ts",
+        "examples/opencalc-studio/src/ui/Calculator.tsx",
+        "examples/opencalc-studio/src/ui/paste.ts",
+        "examples/opencalc-studio/src/ui/Calculator.test.tsx",
+        "examples/opencalc-studio/e2e/*.spec.ts",
+        "examples/opencalc-studio/src/ui/styles.css"
+      ],
+      "findings": "Blockers: none. MAJOR (fixed): scientific-notation results such as 1e-5 produced by format() could not be re-tokenized/re-parsed, so reusing such a result (e.g. from history) failed; tokenizer + decimal parser now accept exponent form, with regression tests. Minor/nit items documented in docs/integration-review.md (e.g. history does not snapshot angle-mode context).",
+      "verdict": "SHIP",
+      "verification": "operator ran the full gate set after merge: format:check OK, lint 0 errors, typecheck clean, npm test 49 passed (44 engine + 5 UI), npm run build success, npm audit --omit=dev 0 vulnerabilities, npx playwright test 18 passed across chromium/firefox/webkit.",
+      "reviewed_by": ["operator (scope check + full gate set + E2E re-run)"],
+      "status": "accepted"
     }
   ],
   "not_completed": {
