@@ -39,6 +39,9 @@ describe('Calculator UI', () => {
 
     expect(screen.getByLabelText('Result: 56').textContent).toBe('56');
 
+    await user.click(screen.getByRole('button', { name: 'Equals' }));
+    expect(screen.getByLabelText('Result: 448').textContent).toBe('448');
+
     const safePaste = new Event('paste', { bubbles: true, cancelable: true });
     Object.defineProperty(safePaste, 'clipboardData', {
       value: { getData: () => ' (12 + 3) * 2 ' },
@@ -58,10 +61,53 @@ describe('Calculator UI', () => {
     await waitFor(() => {
       expect(
         screen.getByLabelText(
-          'Error: Paste numbers and calculator operators only',
+          'Error: Paste numbers with +, −, ×, ÷, ^, parentheses, or ! only',
         ),
       ).toBeTruthy();
     });
+
+    const ambiguousPaste = new Event('paste', {
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(ambiguousPaste, 'clipboardData', {
+      value: { getData: () => '10%3' },
+    });
+    document.body.dispatchEvent(ambiguousPaste);
+
+    await waitFor(() => {
+      expect(
+        screen.getByLabelText(
+          'Error: Paste numbers with +, −, ×, ÷, ^, parentheses, or ! only',
+        ),
+      ).toBeTruthy();
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Clear all' }));
+    await user.click(screen.getByRole('button', { name: 'Two' }));
+    await user.click(screen.getByRole('button', { name: 'Zero' }));
+    await user.click(screen.getByRole('button', { name: 'Zero' }));
+    await user.click(screen.getByRole('button', { name: /^Add$/ }));
+    await user.click(screen.getByRole('button', { name: 'One' }));
+    await user.click(screen.getByRole('button', { name: 'Zero' }));
+    await user.click(screen.getByRole('button', { name: 'Percent' }));
+    await user.click(screen.getByRole('button', { name: 'Equals' }));
+    expect(screen.getByLabelText('Result: 220').textContent).toBe('220');
+
+    await user.click(
+      screen.getByRole('button', { name: 'Toggle positive or negative' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Equals' }));
+    expect(screen.getByLabelText('Result: −220').textContent).toBe('−220');
+
+    await user.click(screen.getByRole('button', { name: 'Clear all' }));
+    await user.click(screen.getByRole('button', { name: 'One' }));
+    await user.click(screen.getByRole('button', { name: 'Divide' }));
+    await user.click(screen.getByRole('button', { name: 'Zero' }));
+    await user.click(screen.getByRole('button', { name: 'Equals' }));
+    expect(
+      screen.getByLabelText('Error: Cannot divide by zero').textContent,
+    ).toBe('Cannot divide by zero');
   });
 
   it('reveals the scientific keys when scientific mode is selected', async () => {
@@ -93,6 +139,7 @@ describe('Calculator UI', () => {
 
   it('records a completed calculation in history', async () => {
     const user = userEvent.setup();
+    window.localStorage.setItem('opencalc.history', '{malformed');
     render(<CalculatorHarness />);
 
     await user.click(screen.getByRole('button', { name: 'Two' }));
@@ -107,6 +154,29 @@ describe('Calculator UI', () => {
     expect(
       screen.getByRole('button', { name: 'Reuse 2 + 3' }).textContent,
     ).toContain('= 5');
+
+    await user.click(
+      screen.getAllByRole('button', { name: 'Close history' })[0]!,
+    );
+    await user.click(screen.getByRole('button', { name: 'Open settings' }));
+    await user.click(screen.getByRole('checkbox', { name: /Private mode/ }));
+
+    await waitFor(() => {
+      expect(window.localStorage.getItem('opencalc.history')).toBeNull();
+    });
+
+    await user.click(
+      screen.getAllByRole('button', { name: 'Close settings' })[0]!,
+    );
+    await user.click(screen.getByRole('button', { name: 'One' }));
+    await user.click(screen.getByRole('button', { name: /^Add$/ }));
+    await user.click(screen.getByRole('button', { name: 'One' }));
+    await user.click(screen.getByRole('button', { name: 'Equals' }));
+
+    expect(
+      screen.getByRole('button', { name: 'Open history, 0 entries' }),
+    ).toBeTruthy();
+    expect(window.localStorage.getItem('opencalc.history')).toBeNull();
   });
 
   it('persists settings and restores them on a new mount', async () => {
@@ -128,12 +198,25 @@ describe('Calculator UI', () => {
     });
 
     firstRender.unmount();
-    render(<App />);
+    const secondRender = render(<App />);
     await user.click(screen.getByRole('button', { name: 'Open settings' }));
 
     const restoredGrouping = screen.getByRole('checkbox', {
       name: /Digit grouping/,
     }) as HTMLInputElement;
     expect(restoredGrouping.checked).toBe(false);
+
+    secondRender.unmount();
+    window.localStorage.setItem(
+      'opencalc.settings',
+      JSON.stringify({ version: 99, settings: {} }),
+    );
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: 'Open settings' }));
+
+    const recoveredGrouping = screen.getByRole('checkbox', {
+      name: /Digit grouping/,
+    }) as HTMLInputElement;
+    expect(recoveredGrouping.checked).toBe(true);
   });
 });

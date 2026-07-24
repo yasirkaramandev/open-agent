@@ -26,6 +26,7 @@ describe('OpenCalc Studio engine', () => {
   describe('reliable decimal arithmetic', () => {
     it('0.1 + 0.2 === 0.3 exactly', () => {
       expect(compute('0.1 + 0.2').value).toBe(0.3);
+      expect(compute('0.1 + 0.2 - 0.3').value).toBe(0);
     });
 
     it('0.3 - 0.1 === 0.2 exactly', () => {
@@ -43,6 +44,7 @@ describe('OpenCalc Studio engine', () => {
     it('large integer arithmetic stays exact', () => {
       const expected = Number(9_007_199_254_740_995n);
       expect(compute('9007199254740993 + 2').value).toBe(expected);
+      expect(compute('1e-5 + 1').value).toBe(1.00001);
     });
   });
 
@@ -189,6 +191,7 @@ describe('OpenCalc Studio engine', () => {
 
     it('dangling operator throws SyntaxError', () => {
       expect(() => compute('2 +')).toThrow(SyntaxError);
+      expect(() => compute('1..2')).toThrow(SyntaxError);
     });
 
     it('unknown identifier throws SyntaxError', () => {

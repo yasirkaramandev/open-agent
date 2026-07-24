@@ -866,7 +866,7 @@ button {
 }
 
 .pwa-update button {
-  min-height: 2.15rem;
+  min-height: 2.75rem;
   border: 0;
   border-radius: 0.65rem;
   cursor: pointer;
@@ -880,7 +880,7 @@ button {
 }
 
 .pwa-update__dismiss {
-  width: 2.15rem;
+  width: 2.75rem;
   padding: 0;
   color: var(--muted);
   background: transparent;

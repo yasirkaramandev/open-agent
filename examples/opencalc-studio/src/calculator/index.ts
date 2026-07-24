@@ -27,6 +27,7 @@ export {
   InvalidFactorial as InvalidFactorial,
   MismatchedParens as MismatchedParens,
   type AngleMode,
+  type CalcErrorCode,
   type Token,
   type Node,
 } from './types';

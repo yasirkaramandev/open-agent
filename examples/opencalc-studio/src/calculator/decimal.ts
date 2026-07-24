@@ -58,7 +58,10 @@ const FACTORIAL_OVERFLOW_LIMIT = 170n;
 
 /* ----------------------------- parsing ----------------------------- */
 
-/** Parse a number/string into a canonical DecimalRep. Accepts 0.1, 42, .5, -3. */
+/**
+ * Parse a number/string into a canonical DecimalRep.
+ * Accepts 0.1, 42, .5, -3, and scientific notation such as 1.5e3.
+ */
 export function parseDecimal(input: number | string): DecimalRep {
   const s =
     typeof input === 'number' ? numberToString(input) : String(input).trim();
@@ -73,14 +76,25 @@ export function parseDecimal(input: number | string): DecimalRep {
     body = body.slice(1);
   }
 
-  if (!/^\d*(\.\d*)?$/.test(body) || body === '.') {
+  const match = /^(\d*(?:\.\d*)?)(?:[eE]([+-]?\d+))?$/.exec(body);
+  const mantissa = match?.[1];
+  if (mantissa === undefined || mantissa === '' || mantissa === '.') {
     throw new SyntaxError(`invalid number literal: ${input}`);
   }
 
-  const [intPart = '', fracPart = ''] = body.split('.');
-  const scale = fracPart.length;
+  const exponent = Number(match?.[2] ?? 0);
+  if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 10_000) {
+    throw new Overflow(`numeric exponent out of range: ${input}`);
+  }
+
+  const [intPart = '', fracPart = ''] = mantissa.split('.');
+  let scale = fracPart.length - exponent;
   const digitsStr = `${intPart}${fracPart}` || '0';
-  const digits = BigInt(digitsStr);
+  let digits = BigInt(digitsStr);
+  if (scale < 0) {
+    digits *= pow10(-scale);
+    scale = 0;
+  }
   if (digits === 0n) sign = 0; // normalise -0 -> 0
   return trim({ sign, digits, scale });
 }
@@ -287,19 +301,12 @@ function digitsToScaledString(
   return fracPart === '' ? intPart : `${intPart}.${fracPart}`;
 }
 
-/** Number -> string without exponential notation when feasible. */
+/** Number -> its canonical shortest round-trippable string. */
 function numberToString(n: number): string {
   if (Object.is(n, -0)) return '0';
   if (!Number.isFinite(n)) throw new Overflow('numeric overflow');
-  if (Number.isInteger(n)) return n.toString();
-  // For fractional doubles use toPrecision then trim; keeps determinism.
-  let s = n.toPrecision(21);
-  if (s.includes('e') || s.includes('E')) {
-    // Fallback for edge values (only the transcendental path uses these).
-    s = Number(n.toPrecision(17)).toString();
-  }
-  if (s.includes('.')) {
-    s = s.replace(/0+$/, '').replace(/\.$/, '');
-  }
-  return s;
+  // JavaScript's canonical shortest round-trippable representation avoids
+  // manufacturing binary-noise digits when an exact decimal intermediate
+  // (for example 0.3) is promoted back into the integer-scaled core.
+  return n.toString();
 }

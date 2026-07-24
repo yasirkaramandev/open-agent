@@ -12,4 +12,27 @@ test('main view has no serious or critical accessibility violations', async ({
   );
 
   expect(seriousOrCritical).toEqual([]);
+
+  const settingsButton = page.getByRole('button', { name: 'Open settings' });
+  await settingsButton.click();
+  const dialog = page.getByRole('dialog', { name: 'Settings' });
+  await expect(
+    dialog.getByRole('button', { name: 'Close settings' }),
+  ).toBeFocused();
+
+  await page.keyboard.press('Shift+Tab');
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        Boolean(
+          document
+            .querySelector('[role="dialog"]')
+            ?.contains(document.activeElement),
+        ),
+      ),
+    )
+    .toBe(true);
+
+  await page.keyboard.press('Escape');
+  await expect(settingsButton).toBeFocused();
 });

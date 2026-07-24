@@ -6,7 +6,8 @@
  * It produces an `eof` sentinel and never reaches into the parser.
  *
  * Recognised tokens:
- *   - numbers:    digits and optional decimals, e.g. 42, 0.1, .5, 3.14
+ *   - numbers:    digits, optional decimals, and optional exponents,
+ *                 e.g. 42, 0.1, .5, 3.14, 1.5e3
  *   - operators:  + - * / % ^
  *   - parens:     ( )
  *   - functions:  sin cos tan asin acos atan sinh cosh tanh
@@ -73,6 +74,27 @@ export function tokenize(input: string): Token[] {
           break;
         }
       }
+
+      // Scientific notation. Treat `e` as the named constant unless it is
+      // followed by an optional sign and at least one exponent digit.
+      if (input[i] === 'e' || input[i] === 'E') {
+        let exponentEnd = i + 1;
+        if (input[exponentEnd] === '+' || input[exponentEnd] === '-') {
+          exponentEnd += 1;
+        }
+        if (isDigit(input[exponentEnd] ?? '')) {
+          exponentEnd += 1;
+          while (isDigit(input[exponentEnd] ?? '')) exponentEnd += 1;
+          i = exponentEnd;
+        }
+      }
+
+      // Do not reinterpret a second decimal point as implicit
+      // multiplication (for example, `1..2` must be a malformed number).
+      if (input[i] === '.') {
+        throw new SyntaxError(`invalid number near pos ${i}`, i);
+      }
+
       const text = input.slice(start, i);
       if (text === '.') {
         throw new SyntaxError(`invalid number near pos ${pos}`, pos);

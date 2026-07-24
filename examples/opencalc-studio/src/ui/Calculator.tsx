@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CalcError, compute, format } from '../calculator';
+import { CalcError, compute, format, type CalcErrorCode } from '../calculator';
 import { Display } from './Display';
 import { HistoryPanel } from './HistoryPanel';
 import { Keypad, type CalculatorAction } from './Keypad';
@@ -13,6 +13,11 @@ type Operator = '+' | '-' | '*' | '/' | '^';
 type PanelName = 'history' | 'settings';
 type MemoryAction = 'clear' | 'recall' | 'add' | 'subtract' | 'store';
 
+interface RepeatOperation {
+  operator: Operator;
+  operand: string;
+}
+
 interface CalculatorProps {
   settings: CalculatorSettings;
   onSettingsChange: (updates: Partial<CalculatorSettings>) => void;
@@ -20,12 +25,12 @@ interface CalculatorProps {
 
 const MAX_ENTRY_LENGTH = 16;
 
-const errorMessages: Record<string, string> = {
+const errorMessages: Record<CalcErrorCode, string> = {
   DivisionByZero: 'Cannot divide by zero',
   DomainError: 'That value is outside the valid range',
   Overflow: 'Result is too large',
   SyntaxError: 'Check the expression',
-  InvalidFactorial: 'Factorial needs a positive whole number',
+  InvalidFactorial: 'Factorial needs a non-negative whole number',
   MismatchedParens: 'Check the parentheses',
 };
 
@@ -118,16 +123,46 @@ export function Calculator({ settings, onSettingsChange }: CalculatorProps) {
   const [recalledExpression, setRecalledExpression] = useState<string | null>(
     null,
   );
+  const [repeatOperation, setRepeatOperation] =
+    useState<RepeatOperation | null>(null);
+  const [lastExpression, setLastExpression] = useState<string | null>(null);
   const keyTimer = useRef<number | null>(null);
+  const panelTrigger = useRef<HTMLButtonElement | null>(null);
   const { entries, addEntry, removeEntry, clearEntries } = useCalculatorHistory(
     settings.privateMode,
   );
   const handleSettingsChange = useCallback(
     (updates: Partial<CalculatorSettings>) => {
       if (updates.privateMode === true) clearEntries();
+      if (
+        updates.angleMode !== undefined &&
+        updates.angleMode !== settings.angleMode &&
+        justEvaluated &&
+        lastExpression !== null
+      ) {
+        try {
+          const result = compute(lastExpression, {
+            angleMode: updates.angleMode,
+            precision: 12,
+          });
+          setEntry(result.formatted);
+          setEntryToken(result.formatted);
+          setEntryStarted(true);
+          setEntryIsResult(true);
+          setError(null);
+        } catch (calculationError) {
+          setError(messageForError(calculationError));
+        }
+      }
       onSettingsChange(updates);
     },
-    [clearEntries, onSettingsChange],
+    [
+      clearEntries,
+      justEvaluated,
+      lastExpression,
+      onSettingsChange,
+      settings.angleMode,
+    ],
   );
 
   const clearAll = useCallback(() => {
@@ -140,11 +175,17 @@ export function Calculator({ settings, onSettingsChange }: CalculatorProps) {
     setError(null);
     setJustEvaluated(false);
     setRecalledExpression(null);
+    setRepeatOperation(null);
+    setLastExpression(null);
   }, []);
 
   const runCalculation = useCallback(
-    (expressionParts: readonly string[]) => {
+    (
+      expressionParts: readonly string[],
+      nextRepeatOperation: RepeatOperation | null = null,
+    ) => {
       const expression = expressionParts.join(' ');
+      setLastExpression(expression);
       try {
         const result = compute(expression, {
           angleMode: settings.angleMode,
@@ -159,11 +200,13 @@ export function Calculator({ settings, onSettingsChange }: CalculatorProps) {
         setError(null);
         setJustEvaluated(true);
         setRecalledExpression(null);
+        setRepeatOperation(nextRepeatOperation);
         addEntry(expression, result.formatted);
       } catch (calculationError) {
         setDisplayExpression(`${expressionLabel(expressionParts)} =`);
         setError(messageForError(calculationError));
         setJustEvaluated(true);
+        setRepeatOperation(null);
       }
     },
     [addEntry, settings.angleMode],
@@ -198,6 +241,7 @@ export function Calculator({ settings, onSettingsChange }: CalculatorProps) {
         setEntryStarted(true);
         setEntryIsResult(false);
         setRecalledExpression(null);
+        if (beginNew) setRepeatOperation(null);
 
         let nextEntry: string;
         if (!hasStarted || current === '0') {
@@ -223,6 +267,7 @@ export function Calculator({ settings, onSettingsChange }: CalculatorProps) {
         setEntryStarted(true);
         setEntryIsResult(false);
         setRecalledExpression(null);
+        if (beginNew) setRepeatOperation(null);
         const nextEntry =
           !beginNew && entryStarted
             ? `${current}.`
@@ -262,12 +307,28 @@ export function Calculator({ settings, onSettingsChange }: CalculatorProps) {
           return;
         }
         if (parts.length === 0) {
-          if (justEvaluated) return;
+          if (justEvaluated) {
+            if (repeatOperation === null) return;
+            runCalculation(
+              [entryToken, repeatOperation.operator, repeatOperation.operand],
+              repeatOperation,
+            );
+            return;
+          }
           runCalculation([entryToken]);
           return;
         }
         if (!entryStarted) return;
-        runCalculation([...parts, entryToken]);
+        const operator = parts.at(-1);
+        const nextRepeatOperation: RepeatOperation | null =
+          operator === '+' ||
+          operator === '-' ||
+          operator === '*' ||
+          operator === '/' ||
+          operator === '^'
+            ? { operator, operand: entryToken }
+            : null;
+        runCalculation([...parts, entryToken], nextRepeatOperation);
         return;
       }
 
@@ -380,6 +441,7 @@ export function Calculator({ settings, onSettingsChange }: CalculatorProps) {
       justEvaluated,
       parts,
       recalledExpression,
+      repeatOperation,
       runCalculation,
       settings.angleMode,
     ],
@@ -471,24 +533,70 @@ export function Calculator({ settings, onSettingsChange }: CalculatorProps) {
     [entry, memory, settings.angleMode],
   );
 
-  const reuseHistoryEntry = useCallback((historyEntry: HistoryEntry) => {
-    setParts([]);
-    setEntry(historyEntry.result);
-    setEntryToken(historyEntry.result);
-    setEntryStarted(false);
-    setEntryIsResult(true);
-    setDisplayExpression('');
-    setError(null);
-    setJustEvaluated(false);
-    setRecalledExpression(historyEntry.expression);
-    setOpenPanel(null);
-  }, []);
+  const closePanel = useCallback(() => setOpenPanel(null), []);
+
+  const reuseHistoryEntry = useCallback(
+    (historyEntry: HistoryEntry) => {
+      setParts([]);
+      setEntry(historyEntry.result);
+      setEntryToken(historyEntry.result);
+      setEntryStarted(false);
+      setEntryIsResult(true);
+      setDisplayExpression('');
+      setError(null);
+      setJustEvaluated(false);
+      setRecalledExpression(historyEntry.expression);
+      setRepeatOperation(null);
+      setLastExpression(null);
+      closePanel();
+    },
+    [closePanel],
+  );
+
+  useEffect(() => {
+    if (openPanel === null && panelTrigger.current !== null) {
+      panelTrigger.current.focus();
+      panelTrigger.current = null;
+    }
+  }, [openPanel]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Tab' && openPanel !== null) {
+        const dialog = document.querySelector<HTMLElement>(
+          '.side-panel[role="dialog"]',
+        );
+        const focusable = dialog
+          ? Array.from(
+              dialog.querySelectorAll<HTMLElement>(
+                'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])',
+              ),
+            )
+          : [];
+        const first = focusable[0];
+        const last = focusable.at(-1);
+        const active = document.activeElement;
+
+        if (first && last) {
+          if (
+            event.shiftKey &&
+            (active === first || !dialog?.contains(active))
+          ) {
+            event.preventDefault();
+            last.focus();
+          } else if (
+            !event.shiftKey &&
+            (active === last || !dialog?.contains(active))
+          ) {
+            event.preventDefault();
+            first.focus();
+          }
+        }
+        return;
+      }
       if (event.key === 'Escape' && openPanel !== null) {
         event.preventDefault();
-        setOpenPanel(null);
+        closePanel();
         return;
       }
       const target = event.target as HTMLElement | null;
@@ -521,7 +629,7 @@ export function Calculator({ settings, onSettingsChange }: CalculatorProps) {
       );
       if (expression === null) {
         clearAll();
-        setError('Paste numbers and calculator operators only');
+        setError('Paste numbers with +, −, ×, ÷, ^, parentheses, or ! only');
         setJustEvaluated(true);
         return;
       }
@@ -535,7 +643,7 @@ export function Calculator({ settings, onSettingsChange }: CalculatorProps) {
       window.removeEventListener('paste', onPaste);
       if (keyTimer.current !== null) window.clearTimeout(keyTimer.current);
     };
-  }, [clearAll, handleAction, openPanel, runCalculation]);
+  }, [clearAll, closePanel, handleAction, openPanel, runCalculation]);
 
   const pendingExpression =
     recalledExpression ||
@@ -588,7 +696,7 @@ export function Calculator({ settings, onSettingsChange }: CalculatorProps) {
                   type="button"
                   key={angleMode}
                   aria-pressed={settings.angleMode === angleMode}
-                  onClick={() => onSettingsChange({ angleMode })}
+                  onClick={() => handleSettingsChange({ angleMode })}
                 >
                   {angleMode}
                 </button>
@@ -602,7 +710,10 @@ export function Calculator({ settings, onSettingsChange }: CalculatorProps) {
             type="button"
             className="toolbar-button"
             aria-label={`Open history, ${entries.length} entries`}
-            onClick={() => setOpenPanel('history')}
+            onClick={(event) => {
+              panelTrigger.current = event.currentTarget;
+              setOpenPanel('history');
+            }}
           >
             History
             {entries.length > 0 ? (
@@ -613,7 +724,10 @@ export function Calculator({ settings, onSettingsChange }: CalculatorProps) {
             type="button"
             className="toolbar-button toolbar-button--icon"
             aria-label="Open settings"
-            onClick={() => setOpenPanel('settings')}
+            onClick={(event) => {
+              panelTrigger.current = event.currentTarget;
+              setOpenPanel('settings');
+            }}
           >
             ⚙
           </button>
@@ -663,7 +777,7 @@ export function Calculator({ settings, onSettingsChange }: CalculatorProps) {
         open={openPanel === 'history'}
         entries={entries}
         privateMode={settings.privateMode}
-        onClose={() => setOpenPanel(null)}
+        onClose={closePanel}
         onReuse={reuseHistoryEntry}
         onRemove={removeEntry}
         onClear={clearEntries}
@@ -671,7 +785,7 @@ export function Calculator({ settings, onSettingsChange }: CalculatorProps) {
       <SettingsPanel
         open={openPanel === 'settings'}
         settings={settings}
-        onClose={() => setOpenPanel(null)}
+        onClose={closePanel}
         onChange={handleSettingsChange}
       />
     </>

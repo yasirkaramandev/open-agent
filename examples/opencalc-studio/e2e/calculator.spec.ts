@@ -22,6 +22,11 @@ test('evaluates a scientific function', async ({ page }) => {
 
   await expect(page.getByLabel('Result: 0.5')).toHaveText('0.5');
   await expect(page.getByLabel('Scientific functions')).toBeVisible();
+
+  await page.getByRole('button', { name: 'RAD' }).click();
+  await expect(page.getByLabel('Result: −0.9880316241')).toHaveText(
+    '−0.9880316241',
+  );
 });
 
 test('supports keyboard-only entry and Enter', async ({ page }) => {
