@@ -197,6 +197,31 @@
         "operator (diff-scope + npm test/typecheck/build + INDEPENDENT `npx playwright test` run across 3 browsers)"
       ],
       "status": "accepted"
+    },
+    {
+      "task_id": "calc-task-007",
+      "title": "security review + CSP + safe paste + dependency audit",
+      "agent": "Sol (codex-cli, gpt-5.6-sol)",
+      "openagent_run_id": "run_eff1b50e098b",
+      "run_status": "completed",
+      "result_commit": "96afbb788f03cf84d13dcdb0d8ea3e12461a04c5",
+      "integration_commit": "96afbb788f03cf84d13dcdb0d8ea3e12461a04c5 (fast-forward)",
+      "prompt_artifact": ".openagent/runs/run_eff1b50e098b/request.json",
+      "output_artifact": ".openagent/runs/run_eff1b50e098b/output.md",
+      "files_changed": [
+        "examples/opencalc-studio/index.html (CSP meta)",
+        "examples/opencalc-studio/src/ui/paste.ts",
+        "examples/opencalc-studio/src/ui/Calculator.tsx",
+        "examples/opencalc-studio/src/ui/Calculator.test.tsx",
+        "examples/opencalc-studio/docs/security-review.md",
+        "examples/opencalc-studio/vitest.config.ts",
+        "examples/opencalc-studio/package.json"
+      ],
+      "verification": "operator INDEPENDENTLY verified: grep over src/+index.html finds NO eval / new Function / dangerouslySetInnerHTML / remote <script src=https> / analytics. CSP meta enforced: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; worker-src 'self'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'. `npm audit` = 0 vulnerabilities (prod AND dev). npm test 49 passed; typecheck clean; build ok; and `npx playwright test` -> 18 passed across chromium/firefox/webkit UNDER the CSP (proving the policy does not break the app or the service worker).",
+      "reviewed_by": [
+        "operator (independent grep + CSP inspection + npm audit + full E2E re-run under CSP)"
+      ],
+      "status": "accepted"
     }
   ],
   "not_completed": {
