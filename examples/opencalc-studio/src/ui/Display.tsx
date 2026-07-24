@@ -36,6 +36,7 @@ export function Display({
 
       <div
         className="display__expression"
+        role="status"
         aria-label={expression ? `Expression: ${expression}` : 'No expression'}
       >
         {expression || <span aria-hidden="true">0</span>}
