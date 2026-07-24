@@ -279,6 +279,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     env:
       OPENAGENT_SETUP_NO_LAUNCH: "1"
+      OPENAGENT_SETUP_LOCAL: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -409,6 +410,7 @@ jobs:
         shell: [cmd, powershell]
     env:
       OPENAGENT_SETUP_NO_LAUNCH: "1"
+      OPENAGENT_SETUP_LOCAL: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -482,6 +484,7 @@ jobs:
     runs-on: windows-latest
     env:
       OPENAGENT_SETUP_NO_LAUNCH: "1"
+      OPENAGENT_SETUP_LOCAL: "1"
     steps:
       - uses: actions/checkout@v4
 
