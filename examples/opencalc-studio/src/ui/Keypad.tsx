@@ -3,7 +3,7 @@ import { CalculatorButton } from './CalculatorButton';
 export type CalculatorAction =
   | { type: 'digit'; value: string }
   | { type: 'decimal' }
-  | { type: 'operator'; value: '+' | '-' | '*' | '/' }
+  | { type: 'operator'; value: '+' | '-' | '*' | '/' | '^' }
   | { type: 'equals' }
   | { type: 'clear' }
   | { type: 'clearEntry' }

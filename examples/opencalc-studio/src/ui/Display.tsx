@@ -1,14 +1,34 @@
+import type { AngleMode } from '../calculator';
+
 interface DisplayProps {
   expression: string;
   result: string;
   isError: boolean;
+  mode: 'STD' | 'SCI';
+  angleMode: AngleMode;
+  hasMemory: boolean;
 }
 
-export function Display({ expression, result, isError }: DisplayProps) {
+export function Display({
+  expression,
+  result,
+  isError,
+  mode,
+  angleMode,
+  hasMemory,
+}: DisplayProps) {
   return (
     <div className="display" aria-label="Calculator display">
       <div className="display__status">
-        <span className="display__mode">STD</span>
+        <span className="display__mode">
+          {mode}
+          {mode === 'SCI' ? ` / ${angleMode}` : ''}
+          {hasMemory ? (
+            <span className="display__memory" aria-label="Memory contains a value">
+              M
+            </span>
+          ) : null}
+        </span>
         <span className="display__indicator" aria-label="Calculator is ready">
           READY
         </span>

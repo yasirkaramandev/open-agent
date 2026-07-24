@@ -1,4 +1,4 @@
-import type { ThemePreference } from './useTheme';
+import type { ThemePreference } from './settings';
 
 interface ThemeControlProps {
   theme: ThemePreference;

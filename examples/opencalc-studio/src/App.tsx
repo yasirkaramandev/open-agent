@@ -1,9 +1,11 @@
 import { Calculator } from './ui/Calculator';
 import { ThemeControl } from './ui/ThemeControl';
+import { useCalculatorSettings } from './ui/settings';
 import { useTheme } from './ui/useTheme';
 
 export default function App() {
-  const { theme, setTheme } = useTheme();
+  const { settings, updateSettings } = useCalculatorSettings();
+  useTheme(settings.theme);
 
   return (
     <div className="app-shell">
@@ -21,15 +23,18 @@ export default function App() {
           </span>
         </a>
 
-        <ThemeControl theme={theme} onChange={setTheme} />
+        <ThemeControl
+          theme={settings.theme}
+          onChange={(theme) => updateSettings({ theme })}
+        />
       </header>
 
       <main className="calculator-stage">
-        <Calculator />
+        <Calculator settings={settings} onSettingsChange={updateSettings} />
       </main>
 
       <footer className="app-footer">
-        <span>Standard mode</span>
+        <span>Standard + scientific</span>
         <span aria-hidden="true">•</span>
         <span>Keyboard ready</span>
       </footer>

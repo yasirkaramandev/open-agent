@@ -1,9 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CalcError, compute } from '../calculator';
+import { CalcError, compute, format } from '../calculator';
 import { Display } from './Display';
+import { HistoryPanel } from './HistoryPanel';
 import { Keypad, type CalculatorAction } from './Keypad';
+import { ScientificKeypad, type ScientificAction } from './ScientificKeypad';
+import { SettingsPanel } from './SettingsPanel';
+import { useCalculatorHistory, type HistoryEntry } from './history';
+import type { CalculatorSettings } from './settings';
 
-type Operator = '+' | '-' | '*' | '/';
+type Operator = '+' | '-' | '*' | '/' | '^';
+type PanelName = 'history' | 'settings';
+type MemoryAction = 'clear' | 'recall' | 'add' | 'subtract' | 'store';
+
+interface CalculatorProps {
+  settings: CalculatorSettings;
+  onSettingsChange: (updates: Partial<CalculatorSettings>) => void;
+}
 
 const MAX_ENTRY_LENGTH = 16;
 
@@ -20,6 +32,7 @@ function operatorLabel(operator: string) {
   if (operator === '*') return '×';
   if (operator === '/') return '÷';
   if (operator === '-') return '−';
+  if (operator === '^') return '^';
   return operator;
 }
 
@@ -27,15 +40,26 @@ function expressionLabel(parts: readonly string[]) {
   return parts.map(operatorLabel).join(' ');
 }
 
-function displayNumber(value: string) {
-  if (value.includes('e')) return value.replace('-', '−');
+function displayNumber(value: string, grouping: boolean) {
+  if (/[eE]/.test(value)) return value.replace('-', '−');
 
   const isNegative = value.startsWith('-');
   const unsigned = isNegative ? value.slice(1) : value;
   const [integer = '0', decimal] = unsigned.split('.');
-  const grouped = integer.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const grouped = grouping
+    ? integer.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+    : integer;
   const formatted = decimal === undefined ? grouped : `${grouped}.${decimal}`;
   return isNegative ? `−${formatted}` : formatted;
+}
+
+function formatResult(value: number, settings: CalculatorSettings) {
+  return format(value, {
+    precision: settings.decimalPlaces + 1,
+    notation: 'fixed',
+    decimalSeparator: '.',
+    groupSeparator: settings.digitGrouping ? ',' : '',
+  }).replace('-', '−');
 }
 
 function getActionId(action: CalculatorAction) {
@@ -61,6 +85,7 @@ function keyboardAction(key: string): CalculatorAction | null {
     return { type: 'operator', value: '*' };
   }
   if (key === '/') return { type: 'operator', value: '/' };
+  if (key === '^') return { type: 'operator', value: '^' };
   if (key === 'Enter' || key === '=') return { type: 'equals' };
   if (key === 'Escape') return { type: 'clear' };
   if (key === 'Delete') return { type: 'clearEntry' };
@@ -76,43 +101,66 @@ function messageForError(error: unknown) {
   return 'Unable to calculate';
 }
 
-export function Calculator() {
+export function Calculator({
+  settings,
+  onSettingsChange,
+}: CalculatorProps) {
   const [parts, setParts] = useState<string[]>([]);
   const [entry, setEntry] = useState('0');
+  const [entryToken, setEntryToken] = useState('0');
   const [entryStarted, setEntryStarted] = useState(false);
-  const [history, setHistory] = useState('');
+  const [entryIsResult, setEntryIsResult] = useState(false);
+  const [displayExpression, setDisplayExpression] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [justEvaluated, setJustEvaluated] = useState(false);
   const [activeKey, setActiveKey] = useState<string | null>(null);
+  const [mode, setMode] = useState<'STD' | 'SCI'>('STD');
+  const [openPanel, setOpenPanel] = useState<PanelName | null>(null);
+  const [memory, setMemory] = useState<string | null>(null);
+  const [recalledExpression, setRecalledExpression] = useState<string | null>(
+    null,
+  );
   const keyTimer = useRef<number | null>(null);
+  const { entries, addEntry, removeEntry, clearEntries } =
+    useCalculatorHistory(settings.privateMode);
 
   const clearAll = useCallback(() => {
     setParts([]);
     setEntry('0');
+    setEntryToken('0');
     setEntryStarted(false);
-    setHistory('');
+    setEntryIsResult(false);
+    setDisplayExpression('');
     setError(null);
     setJustEvaluated(false);
+    setRecalledExpression(null);
   }, []);
 
   const runCalculation = useCallback(
     (expressionParts: readonly string[]) => {
       const expression = expressionParts.join(' ');
       try {
-        const result = compute(expression);
+        const result = compute(expression, {
+          angleMode: settings.angleMode,
+          precision: 12,
+        });
         setEntry(result.formatted);
+        setEntryToken(result.formatted);
         setEntryStarted(true);
+        setEntryIsResult(true);
         setParts([]);
-        setHistory(`${expressionLabel(expressionParts)} =`);
+        setDisplayExpression(`${expressionLabel(expressionParts)} =`);
         setError(null);
         setJustEvaluated(true);
+        setRecalledExpression(null);
+        addEntry(expression, result.formatted);
       } catch (calculationError) {
-        setHistory(`${expressionLabel(expressionParts)} =`);
+        setDisplayExpression(`${expressionLabel(expressionParts)} =`);
         setError(messageForError(calculationError));
         setJustEvaluated(true);
       }
     },
-    [],
+    [addEntry, settings.angleMode],
   );
 
   const handleAction = useCallback(
@@ -131,7 +179,7 @@ export function Calculator() {
       }
 
       if (action.type === 'digit') {
-        const beginNew = justEvaluated;
+        const beginNew = justEvaluated || recalledExpression !== null;
         const current = beginNew ? '0' : entry;
         const hasStarted = beginNew ? false : entryStarted;
         const digitCount = current.replace(/[-.]/g, '').length;
@@ -139,52 +187,62 @@ export function Calculator() {
         if (digitCount >= MAX_ENTRY_LENGTH && hasStarted) return;
 
         setParts(beginNew ? [] : parts);
-        setHistory(beginNew ? '' : history);
+        setDisplayExpression(beginNew ? '' : displayExpression);
         setJustEvaluated(false);
         setEntryStarted(true);
+        setEntryIsResult(false);
+        setRecalledExpression(null);
 
+        let nextEntry: string;
         if (!hasStarted || current === '0') {
-          setEntry(action.value);
+          nextEntry = action.value;
         } else if (current === '-0') {
-          setEntry(`-${action.value}`);
+          nextEntry = `-${action.value}`;
         } else {
-          setEntry(`${current}${action.value}`);
+          nextEntry = `${current}${action.value}`;
         }
+        setEntry(nextEntry);
+        setEntryToken(nextEntry);
         return;
       }
 
       if (action.type === 'decimal') {
-        const beginNew = justEvaluated;
+        const beginNew = justEvaluated || recalledExpression !== null;
         const current = beginNew ? '0' : entry;
         if (!beginNew && entryStarted && current.includes('.')) return;
 
         setParts(beginNew ? [] : parts);
-        setHistory(beginNew ? '' : history);
+        setDisplayExpression(beginNew ? '' : displayExpression);
         setJustEvaluated(false);
         setEntryStarted(true);
-        setEntry(
+        setEntryIsResult(false);
+        setRecalledExpression(null);
+        const nextEntry =
           !beginNew && entryStarted
             ? `${current}.`
             : current === '-0'
               ? '-0.'
-              : '0.',
-        );
+              : '0.';
+        setEntry(nextEntry);
+        setEntryToken(nextEntry);
         return;
       }
 
       if (action.type === 'operator') {
         const operator: Operator = action.value;
 
-        if (justEvaluated) {
+        if (justEvaluated || recalledExpression !== null) {
           setParts([entry, operator]);
-          setHistory('');
+          setDisplayExpression('');
           setEntryStarted(false);
+          setEntryIsResult(true);
           setJustEvaluated(false);
+          setRecalledExpression(null);
           return;
         }
 
         if (entryStarted || parts.length === 0) {
-          setParts([...parts, entry, operator]);
+          setParts([...parts, entryToken, operator]);
           setEntryStarted(false);
         } else {
           setParts([...parts.slice(0, -1), operator]);
@@ -193,21 +251,28 @@ export function Calculator() {
       }
 
       if (action.type === 'equals') {
+        if (recalledExpression !== null) {
+          runCalculation([recalledExpression]);
+          return;
+        }
         if (parts.length === 0) {
-          setHistory(`${displayNumber(entry)} =`);
-          setJustEvaluated(true);
+          if (justEvaluated) return;
+          runCalculation([entryToken]);
           return;
         }
         if (!entryStarted) return;
-        runCalculation([...parts, entry]);
+        runCalculation([...parts, entryToken]);
         return;
       }
 
       if (action.type === 'clearEntry') {
         setEntry('0');
+        setEntryToken('0');
         setEntryStarted(false);
-        setHistory(justEvaluated ? '' : history);
+        setEntryIsResult(false);
+        setDisplayExpression(justEvaluated ? '' : displayExpression);
         setJustEvaluated(false);
+        setRecalledExpression(null);
         return;
       }
 
@@ -221,27 +286,55 @@ export function Calculator() {
           if (parts.length >= 2) {
             const previousEntry = parts.at(-2) ?? '0';
             setParts(parts.slice(0, -2));
-            setEntry(previousEntry);
+            try {
+              const previous = compute(previousEntry, {
+                angleMode: settings.angleMode,
+                precision: 12,
+              });
+              setEntry(previous.formatted);
+              setEntryToken(previousEntry);
+              setEntryIsResult(previousEntry !== previous.formatted);
+            } catch {
+              clearAll();
+              return;
+            }
             setEntryStarted(true);
           }
           return;
         }
 
+        if (entryToken !== entry) {
+          setEntry('0');
+          setEntryToken('0');
+          setEntryStarted(false);
+          setEntryIsResult(false);
+          return;
+        }
         const next = entry.slice(0, -1);
         if (next === '' || next === '-') {
           setEntry('0');
+          setEntryToken('0');
           setEntryStarted(false);
         } else {
           setEntry(next);
+          setEntryToken(next);
         }
+        setEntryIsResult(false);
         return;
       }
 
       if (action.type === 'sign') {
-        setHistory(justEvaluated ? '' : history);
+        const nextEntry = entry.startsWith('-') ? entry.slice(1) : `-${entry}`;
+        const nextToken = entryToken.startsWith('-')
+          ? entryToken.slice(1)
+          : `-(${entryToken})`;
+        setDisplayExpression(justEvaluated ? '' : displayExpression);
         setJustEvaluated(false);
         setEntryStarted(true);
-        setEntry(entry.startsWith('-') ? entry.slice(1) : `-${entry}`);
+        setEntryIsResult(false);
+        setEntry(nextEntry);
+        setEntryToken(nextToken);
+        setRecalledExpression(null);
         return;
       }
 
@@ -252,13 +345,19 @@ export function Calculator() {
           const percentExpression =
             (lastOperator === '+' || lastOperator === '-') &&
             baseParts.length > 0
-              ? `(${baseParts.join(' ')}) * (${entry}) / 100`
-              : `(${entry}) / 100`;
-          const result = compute(percentExpression);
+              ? `(${baseParts.join(' ')}) * (${entryToken}) / 100`
+              : `(${entryToken}) / 100`;
+          const result = compute(percentExpression, {
+            angleMode: settings.angleMode,
+            precision: 12,
+          });
           setEntry(result.formatted);
+          setEntryToken(result.formatted);
           setEntryStarted(true);
-          setHistory(justEvaluated ? '' : history);
+          setEntryIsResult(true);
+          setDisplayExpression(justEvaluated ? '' : displayExpression);
           setJustEvaluated(false);
+          setRecalledExpression(null);
         } catch (calculationError) {
           setError(messageForError(calculationError));
           setJustEvaluated(true);
@@ -268,19 +367,127 @@ export function Calculator() {
     [
       clearAll,
       entry,
+      entryToken,
       entryStarted,
       error,
-      history,
+      displayExpression,
       justEvaluated,
       parts,
+      recalledExpression,
       runCalculation,
+      settings.angleMode,
     ],
   );
 
+  const handleScientificAction = useCallback(
+    (action: ScientificAction) => {
+      if (action.type === 'power') {
+        handleAction({ type: 'operator', value: '^' });
+        return;
+      }
+
+      if (action.type === 'constant') {
+        try {
+          const result = compute(action.name, {
+            angleMode: settings.angleMode,
+            precision: 12,
+          });
+          setEntry(result.formatted);
+          setEntryToken(action.name);
+          setEntryStarted(true);
+          setEntryIsResult(true);
+          setDisplayExpression('');
+          setError(null);
+          setJustEvaluated(false);
+          setRecalledExpression(null);
+        } catch (calculationError) {
+          setError(messageForError(calculationError));
+        }
+        return;
+      }
+
+      const operand = recalledExpression ?? entryToken;
+      const expression =
+        action.type === 'function'
+          ? `${action.name}(${operand})`
+          : action.type === 'square'
+            ? `(${operand})^2`
+            : action.type === 'reciprocal'
+              ? `1/(${operand})`
+              : `(${operand})!`;
+      runCalculation([expression]);
+    },
+    [
+      entryToken,
+      handleAction,
+      recalledExpression,
+      runCalculation,
+      settings.angleMode,
+    ],
+  );
+
+  const handleMemory = useCallback(
+    (action: MemoryAction) => {
+      if (action === 'clear') {
+        setMemory(null);
+        return;
+      }
+      if (action === 'recall') {
+        if (memory === null) return;
+        setEntry(memory);
+        setEntryToken(memory);
+        setEntryStarted(true);
+        setEntryIsResult(true);
+        setDisplayExpression('');
+        setError(null);
+        setJustEvaluated(false);
+        setRecalledExpression(null);
+        return;
+      }
+      if (action === 'store') {
+        setMemory(entry);
+        return;
+      }
+
+      try {
+        const expression = `${memory ?? '0'} ${
+          action === 'add' ? '+' : '-'
+        } (${entry})`;
+        const result = compute(expression, {
+          angleMode: settings.angleMode,
+          precision: 12,
+        });
+        setMemory(result.formatted);
+      } catch (calculationError) {
+        setError(messageForError(calculationError));
+      }
+    },
+    [entry, memory, settings.angleMode],
+  );
+
+  const reuseHistoryEntry = useCallback((historyEntry: HistoryEntry) => {
+    setParts([]);
+    setEntry(historyEntry.result);
+    setEntryToken(historyEntry.result);
+    setEntryStarted(false);
+    setEntryIsResult(true);
+    setDisplayExpression('');
+    setError(null);
+    setJustEvaluated(false);
+    setRecalledExpression(historyEntry.expression);
+    setOpenPanel(null);
+  }, []);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && openPanel !== null) {
+        event.preventDefault();
+        setOpenPanel(null);
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('button, input, select, textarea, a')) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
-
       const action = keyboardAction(event.key);
       if (!action) return;
 
@@ -296,29 +503,139 @@ export function Calculator() {
       window.removeEventListener('keydown', onKeyDown);
       if (keyTimer.current !== null) window.clearTimeout(keyTimer.current);
     };
-  }, [handleAction]);
+  }, [handleAction, openPanel]);
 
   const pendingExpression =
-    history ||
+    recalledExpression ||
+    displayExpression ||
     expressionLabel([
       ...parts,
-      ...(entryStarted && parts.length > 0 ? [displayNumber(entry)] : []),
+      ...(entryStarted && parts.length > 0 ? [entryToken] : []),
     ]);
+  const shownResult =
+    error ??
+    (entryIsResult
+      ? formatResult(Number(entry), settings)
+      : displayNumber(entry, settings.digitGrouping));
 
   return (
-    <section className="calculator" aria-label="Standard calculator">
-      <div className="calculator__topline">
-        <span>OPENCALC / 01</span>
-        <span className="calculator__precision">12-digit precision</span>
-      </div>
+    <>
+      <section
+        className={`calculator${mode === 'SCI' ? ' calculator--scientific' : ''}`}
+        aria-label={`${mode === 'SCI' ? 'Scientific' : 'Standard'} calculator`}
+      >
+        <div className="calculator__topline">
+          <span>OPENCALC / 01</span>
+          <span className="calculator__precision">
+            {settings.decimalPlaces} decimal places
+          </span>
+        </div>
 
-      <Display
-        expression={pendingExpression}
-        result={error ?? displayNumber(entry)}
-        isError={error !== null}
+        <div className="calculator-toolbar">
+          <div className="mode-toggle" role="group" aria-label="Calculator mode">
+            {(['STD', 'SCI'] as const).map((calculatorMode) => (
+              <button
+                type="button"
+                key={calculatorMode}
+                aria-pressed={mode === calculatorMode}
+                onClick={() => setMode(calculatorMode)}
+              >
+                {calculatorMode}
+              </button>
+            ))}
+          </div>
+
+          {mode === 'SCI' ? (
+            <div className="angle-toggle" role="group" aria-label="Angle mode">
+              {(['DEG', 'RAD'] as const).map((angleMode) => (
+                <button
+                  type="button"
+                  key={angleMode}
+                  aria-pressed={settings.angleMode === angleMode}
+                  onClick={() => onSettingsChange({ angleMode })}
+                >
+                  {angleMode}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <span className="calculator-toolbar__spacer" />
+          )}
+
+          <button
+            type="button"
+            className="toolbar-button"
+            aria-label={`Open history, ${entries.length} entries`}
+            onClick={() => setOpenPanel('history')}
+          >
+            History
+            {entries.length > 0 ? (
+              <span aria-hidden="true">{entries.length}</span>
+            ) : null}
+          </button>
+          <button
+            type="button"
+            className="toolbar-button toolbar-button--icon"
+            aria-label="Open settings"
+            onClick={() => setOpenPanel('settings')}
+          >
+            ⚙
+          </button>
+        </div>
+
+        <Display
+          expression={pendingExpression}
+          result={shownResult}
+          isError={error !== null}
+          mode={mode}
+          angleMode={settings.angleMode}
+          hasMemory={memory !== null}
+        />
+
+        <div className="memory-keypad" aria-label="Memory controls">
+          {(
+            [
+              ['MC', 'Clear memory', 'clear'],
+              ['MR', 'Recall memory', 'recall'],
+              ['M+', 'Add display to memory', 'add'],
+              ['M−', 'Subtract display from memory', 'subtract'],
+              ['MS', 'Store display in memory', 'store'],
+            ] as const
+          ).map(([visual, label, action]) => (
+            <button
+              type="button"
+              key={action}
+              aria-label={label}
+              disabled={memory === null && (action === 'clear' || action === 'recall')}
+              onClick={() => handleMemory(action)}
+            >
+              {visual}
+            </button>
+          ))}
+        </div>
+
+        {mode === 'SCI' ? (
+          <ScientificKeypad onAction={handleScientificAction} />
+        ) : null}
+
+        <Keypad onAction={handleAction} activeKey={activeKey} />
+      </section>
+
+      <HistoryPanel
+        open={openPanel === 'history'}
+        entries={entries}
+        privateMode={settings.privateMode}
+        onClose={() => setOpenPanel(null)}
+        onReuse={reuseHistoryEntry}
+        onRemove={removeEntry}
+        onClear={clearEntries}
       />
-
-      <Keypad onAction={handleAction} activeKey={activeKey} />
-    </section>
+      <SettingsPanel
+        open={openPanel === 'settings'}
+        settings={settings}
+        onClose={() => setOpenPanel(null)}
+        onChange={onSettingsChange}
+      />
+    </>
   );
 }
