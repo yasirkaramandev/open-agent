@@ -1,4 +1,5 @@
 :root {
+  color-scheme: light dark;
   font-family:
     Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
@@ -56,6 +57,7 @@
 }
 
 :root[data-theme="light"] {
+  color-scheme: light;
   color: #1e211f;
   background: #f4f2ed;
   --page: #f4f2ed;
@@ -81,6 +83,7 @@
 }
 
 :root[data-theme="dark"] {
+  color-scheme: dark;
   color: #f2f4ef;
   background: #111512;
   --page: #111512;

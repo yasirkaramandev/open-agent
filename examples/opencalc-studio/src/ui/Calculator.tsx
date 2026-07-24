@@ -6,6 +6,7 @@ import { Keypad, type CalculatorAction } from './Keypad';
 import { ScientificKeypad, type ScientificAction } from './ScientificKeypad';
 import { SettingsPanel } from './SettingsPanel';
 import { useCalculatorHistory, type HistoryEntry } from './history';
+import { sanitizePastedExpression } from './paste';
 import type { CalculatorSettings } from './settings';
 
 type Operator = '+' | '-' | '*' | '/' | '^';
@@ -498,12 +499,38 @@ export function Calculator({
       keyTimer.current = window.setTimeout(() => setActiveKey(null), 110);
     };
 
+    const onPaste = (event: ClipboardEvent) => {
+      if (openPanel !== null) return;
+      if (
+        event.target instanceof Element &&
+        event.target.closest(
+          'input, select, textarea, [contenteditable="true"]',
+        )
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      const expression = sanitizePastedExpression(
+        event.clipboardData?.getData('text/plain') ?? '',
+      );
+      if (expression === null) {
+        clearAll();
+        setError('Paste numbers and calculator operators only');
+        setJustEvaluated(true);
+        return;
+      }
+      runCalculation([expression]);
+    };
+
     window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('paste', onPaste);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('paste', onPaste);
       if (keyTimer.current !== null) window.clearTimeout(keyTimer.current);
     };
-  }, [handleAction, openPanel]);
+  }, [clearAll, handleAction, openPanel, runCalculation]);
 
   const pendingExpression =
     recalledExpression ||

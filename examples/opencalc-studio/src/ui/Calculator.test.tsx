@@ -31,7 +31,7 @@ afterEach(() => {
 });
 
 describe('Calculator UI', () => {
-  it('computes 7 × 8 from the standard keypad', async () => {
+  it('computes keypad and safely tokenized paste expressions', async () => {
     const user = userEvent.setup();
     render(<CalculatorHarness />);
 
@@ -41,6 +41,30 @@ describe('Calculator UI', () => {
     await user.click(screen.getByRole('button', { name: 'Equals' }));
 
     expect(screen.getByLabelText('Result: 56').textContent).toBe('56');
+
+    const safePaste = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(safePaste, 'clipboardData', {
+      value: { getData: () => ' (12 + 3) * 2 ' },
+    });
+    document.body.dispatchEvent(safePaste);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Result: 30').textContent).toBe('30');
+    });
+
+    const unsafePaste = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(unsafePaste, 'clipboardData', {
+      value: { getData: () => 'alert(1)' },
+    });
+    document.body.dispatchEvent(unsafePaste);
+
+    await waitFor(() => {
+      expect(
+        screen.getByLabelText(
+          'Error: Paste numbers and calculator operators only',
+        ),
+      ).toBeTruthy();
+    });
   });
 
   it('reveals the scientific keys when scientific mode is selected', async () => {

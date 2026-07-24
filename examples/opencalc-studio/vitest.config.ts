@@ -2,8 +2,21 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    environment: 'node',
-    environmentMatchGlobs: [['src/ui/**/*.test.tsx', 'jsdom']],
-    include: ['src/**/*.test.{ts,tsx}'],
+    projects: [
+      {
+        test: {
+          name: 'engine',
+          environment: 'node',
+          include: ['src/calculator/**/*.test.ts'],
+        },
+      },
+      {
+        test: {
+          name: 'ui',
+          environment: 'jsdom',
+          include: ['src/ui/**/*.test.tsx'],
+        },
+      },
+    ],
   },
 });

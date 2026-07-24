@@ -10,7 +10,5 @@ export function useTheme(theme: ThemePreference) {
     } else {
       root.dataset.theme = theme;
     }
-
-    root.style.colorScheme = theme === 'system' ? 'light dark' : theme;
   }, [theme]);
 }
