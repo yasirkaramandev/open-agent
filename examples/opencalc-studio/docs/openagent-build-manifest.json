@@ -222,6 +222,28 @@
         "operator (independent grep + CSP inspection + npm audit + full E2E re-run under CSP)"
       ],
       "status": "accepted"
+    },
+    {
+      "task_id": "calc-task-008",
+      "title": "documentation (README, architecture, precision, shortcuts)",
+      "agent": "Sol (codex-cli, gpt-5.6-sol)",
+      "openagent_run_id": "run_4802af4bfe75",
+      "run_status": "completed",
+      "result_commit": "6826de3717b1173711d59a10c0f49074e228e11f",
+      "integration_commit": "6826de3717b1173711d59a10c0f49074e228e11f (fast-forward)",
+      "prompt_artifact": ".openagent/runs/run_4802af4bfe75/request.json",
+      "output_artifact": ".openagent/runs/run_4802af4bfe75/output.md",
+      "files_changed": [
+        "examples/opencalc-studio/README.md",
+        "examples/opencalc-studio/docs/architecture.md",
+        "examples/opencalc-studio/docs/precision.md",
+        "examples/opencalc-studio/docs/shortcuts.md"
+      ],
+      "verification": "operator ran: npm test 49 passed; typecheck clean; build ok. Docs accuracy spot-checked against source: shortcuts.md key list (Enter/Escape/Backspace/Delete/digits/operators/Ctrl+V paste/Tab) matches the actual key handling in src/ui/. 672 doc lines total.",
+      "reviewed_by": [
+        "operator (gates + docs-vs-source accuracy spot check)"
+      ],
+      "status": "accepted"
     }
   ],
   "not_completed": {
