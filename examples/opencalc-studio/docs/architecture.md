@@ -1,247 +1,285 @@
-# OpenCalc Studio — Architecture & Calculator Engine Contract
+# OpenCalc Studio architecture
 
-This document defines the component architecture for OpenCalc Studio (a premium,
-accessible, offline-capable web calculator built with React + TypeScript strict +
-Vite, shipped as a PWA) and the contract for the calculation engine. It is the
-canonical reference for task assignment and integration order. Application UI
-source is intentionally out of scope here; only the engine modules and their
-public surfaces are specified.
+OpenCalc Studio is a client-only React and TypeScript application built with
+Vite and shipped as a PWA. The current implementation has four main concerns:
+a framework-independent calculation engine, a React UI, small persistence hooks
+backed by `localStorage`, and a generated Workbox service worker.
 
----
+This document supersedes stale paths and planned components from the original
+architecture draft. The durable principles from that draft still apply:
 
-## 1. High-Level Component Map
+- **Engine/UI separation.** `src/calculator/` imports neither React nor browser
+  APIs.
+- **Deterministic core.** An expression and the same `EvalContext` produce the
+  same engine result without consulting locale, storage, session, or clock.
+- **Typed, fail-closed errors.** Invalid expressions and invalid mathematical
+  operations throw a `CalcError` subclass instead of returning a fallback.
+- **No engine singleton.** Angle mode, formatting precision, and maximum
+  evaluation depth are passed in an `EvalContext`.
+- **Formatting at the boundary.** Grouping and decimal-separator choices do not
+  alter the expression AST or arithmetic operations.
 
+## Runtime map
+
+```text
+src/main.tsx
+└── App
+    ├── useCalculatorSettings ─────────── localStorage: opencalc.settings
+    ├── ThemeControl / useTheme
+    ├── Calculator
+    │   ├── Display
+    │   ├── Keypad
+    │   ├── ScientificKeypad
+    │   ├── HistoryPanel ──────────────── localStorage: opencalc.history
+    │   └── SettingsPanel
+    └── PwaUpdatePrompt
+
+Calculator action or accepted paste
+└── compute(expression, context)
+    ├── tokenize(expression)
+    ├── parse(tokens)
+    ├── evaluate(AST, context)
+    └── format(value, { precision })
 ```
-OpenCalc Studio
-├── src/calculator/          # Pure, framework-agnostic engine (no DOM, no React)
-│   ├── types.ts             # Shared types: Token, Node, EvalContext, DecimalType, errors
-│   ├── decimal.ts           # Decimal shim + precision configuration (config-driven)
-│   ├── tokenizer.ts         # tokenize(input): Token[]
-│   ├── parser.ts            # parse(tokens): Node  (Pratt / recursive descent)
-│   ├── evaluator.ts         # evaluate(node, ctx): Decimal
-│   └── scientific.ts        # Scientific functions + DEG/RAD conversions
-├── src/components/          # React UI (presentational + container)
-│   ├── Keypad/              # Accessible keypad widgets
-│   ├── Display/             # Expression + result display (live region)
-│   ├── History/             # Scrollable, keyboard-navigable history list
-│   ├── Settings/            # Angle mode, precision, theme, privacy toggles
-│   └── Shell/               # Responsive layout, focus management, modals
-├── src/state/               # Zustand store; engine is wrapped by a thin adapter
-├── src/pwa/                 # Service worker, manifest, offline caching strategy
-├── tests/                   # Vitest unit + integration tests
-└── docs/                    # This directory
-```
 
-### Architectural principles
+`src/ui/styles.css` contains the responsive layout, explicit light/dark theme
+tokens, system-theme media query, focus styling, and reduced-motion override.
 
-- **Engine/UI separation.** The engine under `src/calculator/` is a pure module
-  with zero React or DOM dependencies. It must be consumable from tests, Web
-  Workers, and the UI adapter without bundling UI code.
-- **Deterministic core.** All numeric behavior is deterministic and independent
-  of session, locale, or clock. Locale and display preferences live only in the
-  format layer.
-- **Fail-closed errors.** The engine never returns a silent fallback for an
-  invalid input; it throws a typed error, and the UI adapter is responsible for
-  surfacing a localized message.
-- **No global mutable state.** Configuration (angle mode, precision) is passed
-  through `EvalContext`, never read from a singleton.
+## Engine layer
 
----
+The engine lives in `src/calculator/` and exposes its public surface through
+`src/calculator/index.ts`.
 
-## 2. Calculator Engine Contract
+| Module | Current responsibility |
+| --- | --- |
+| `types.ts` | `EvalContext`, tokens, AST nodes, formatting options, and the typed `CalcError` hierarchy. |
+| `decimal.ts` | Internal sign/digits/scale decimal representation, integer-scaled arithmetic, number conversion, and factorial. |
+| `tokenizer.ts` | Converts source text to positioned tokens and rejects unsupported characters or identifiers. |
+| `parser.ts` | Builds an AST with precedence, right-associative powers, unary signs, postfix factorial, function calls, grouping, and implicit multiplication. |
+| `scientific.ts` | Registers scientific functions and constants and applies DEG/RAD conversion and domain checks. |
+| `evaluator.ts` | Recursively evaluates the AST, enforces maximum node depth, dispatches arithmetic/scientific operations, and formats values. |
+| `index.ts` | Re-exports the layers and provides the `compute()` convenience pipeline. |
 
-### 2.1 Modules under `src/calculator/`
+### Pipeline
 
-| File         | Responsibility                                                        |
-| ------------ | --------------------------------------------------------------------- |
-| `types.ts`    | Shared types and typed error classes. No logic.                        |
-| `decimal.ts`  | Decimal shim selection, precision config, rounding helpers.           |
-| `tokenizer.ts`| Convert raw input string into a token stream.                          |
-| `parser.ts`   | Convert tokens into an evaluation AST/Node.                            |
-| `evaluator.ts`| Walk the AST and produce a `Decimal` result.                           |
-| `scientific.ts`| Scientific functions: trig, log/exp, factorial, powers/roots; DEG/RAD. |
-
-### 2.2 Public functions
-
-The engine exposes these pure functions (barrel from `src/calculator/index.ts`):
+The normal entry point is:
 
 ```ts
-// src/calculator/types.ts (excerpt — full contract below)
-export interface EvalContext {
-  angleMode: 'DEG' | 'RAD';
-  precision: number;          // significant digits for rounding
-  maxNodeDepth: number;       // guard against pathological / deep input
-}
+compute(expression, {
+  angleMode: 'DEG',
+  precision: 12,
+  maxNodeDepth: 256,
+});
+```
 
-export function tokenize(input: string): Token[];
-export function parse(tokens: Token[]): Node;
-export function evaluate(node: Node, ctx: EvalContext): Decimal;
-export function format(value: Decimal, opts: FormatOptions): string;
+`compute()` fills omitted context fields from `DEFAULT_CONTEXT`, runs
+`tokenize → parse → evaluate → format`, and returns:
 
-export interface FormatOptions {
-  precision: number;
-  notation: 'auto' | 'fixed' | 'scientific';
-  groupSeparator?: string;    // '' by default; UI may set for locale display
-  decimalSeparator: '.' | ','; // '.' internal; ',' only at the format boundary
+```ts
+interface ComputeResult {
+  value: number;
+  formatted: string;
 }
 ```
 
-- `tokenize` MUST be total: it returns a token array or throws `SyntaxError` /
-  `MismatchedParens` for untokenizable input. It MUST NOT reach into `parse`.
-- `parse` MUST produce a valid `Node` tree or throw. It enforces grammar and
-  arity, including balanced parentheses and valid factorial operands.
-- `evaluate` MUST be pure and total over well-formed nodes; runtime math
-  failures raise typed errors (`DivisionByZero`, `DomainError`, `Overflow`).
-- `format` is the ONLY place locale/grouping may be applied. The internal
-  `Decimal` representation stays canonical (dot decimal).
-
-### 2.3 Token & Node shapes (types.ts)
+The lower-level exports remain available for tests and other non-React
+consumers:
 
 ```ts
-export type TokenKind =
-  | 'number' | 'operator' | 'lparen' | 'rparen'
-  | 'comma' | 'ident' | 'constant' | 'eof';
-
-export interface Token { kind: TokenKind; value: string; pos: number; }
-
-export type NodeKind =
-  | 'num' | 'binop' | 'unary' | 'call' | 'constant' | 'factorial';
-
-export interface NumNode      { kind: 'num'; value: Decimal; }
-export interface BinopNode     { kind: 'binop'; op: string; left: Node; right: Node; }
-export interface UnaryNode     { kind: 'unary'; op: string; operand: Node; }
-export interface CallNode     { kind: 'call'; name: string; args: Node[]; }
-export interface ConstantNode  { kind: 'constant'; name: string; }
-export interface FactorialNode { kind: 'factorial'; operand: Node; }
-export type Node =
-  | NumNode | BinopNode | UnaryNode | CallNode | ConstantNode | FactorialNode;
+tokenize(input: string): Token[]
+parse(tokens: Token[]): Node
+evaluate(node: Node, ctx?: EvalContext): number
+format(value: number, opts?: Partial<FormatOptions>): string
 ```
 
-### 2.4 Typed error kinds (all extend `CalcError`, carrying `code` + `message`)
+The tokenizer accepts ordinary integer and decimal literals, arithmetic
+operators (`+ - * / % ^`), parentheses, factorial, commas as function argument
+separators, known function names, and the `pi` and `e` constants. The parser
+implements implicit multiplication such as `2pi` and `2(3 + 1)`.
 
-| Error kind            | Raised by                  | Trigger example                                  |
-| --------------------- | -------------------------- | ------------------------------------------------ |
-| `DivisionByZero`       | evaluator                  | `1/0`, modulo by 0, `tan(90°)` (when relevant)   |
-| `DomainError`          | evaluator / scientific      | `sqrt(-1)`, `log(-5)`, `asin(2)`, negative base**fractional exp** |
-| `Overflow`             | evaluator / scientific      | `10^9999`, factorial of a very large integer      |
-| `SyntaxError`          | tokenizer / parser          | malformed number, dangling operator, unknown ident|
-| `InvalidFactorial`      | scientific                 | `0.5!`, negative integer `(-3)!`, non-integer arg |
-| `MismatchedParens`      | parser                     | unbalanced `(` or `)`                             |
+### AST and evaluation
 
-```ts
-export abstract class CalcError extends Error {
-  abstract readonly code:
-    | 'DivisionByZero' | 'DomainError' | 'Overflow'
-    | 'SyntaxError'    | 'InvalidFactorial' | 'MismatchedParens';
-  pos?: number;
+The AST is a discriminated union of numeric, binary-operator, unary, function
+call, constant, and factorial nodes. Source decimal text is retained privately
+on numeric nodes so literal operands can be reconstructed for integer-scaled
+decimal operations.
+
+Core `+`, `-`, `*`, and `/` dispatch through `decimal.ts`. Remainder and
+exponentiation use JavaScript numeric operations with explicit zero, domain,
+and non-finite-result checks. Scientific functions use `Math.*`; trig inputs
+are converted to radians in DEG mode, and inverse-trig results are converted
+back to the selected mode. See [precision.md](precision.md) for the exact
+numeric model and its boundaries.
+
+### Typed errors
+
+Every engine error extends `CalcError`, exposes a stable `code` (also available
+as `kind`), and may carry a zero-based source `pos`.
+
+| Code / class | Typical source |
+| --- | --- |
+| `DivisionByZero` | Division or modulo by zero, a negative power of zero, or a tangent asymptote. |
+| `DomainError` | Invalid square root/log/inverse-trig input or a negative base with a fractional exponent. |
+| `Overflow` | A non-finite result, factorial above 170, or the evaluation-depth guard. |
+| `SyntaxError` | Unsupported input, malformed grammar, unknown function/constant, or wrong function arity. |
+| `InvalidFactorial` | A negative or non-integer factorial operand. |
+| `MismatchedParens` | Missing or extra parentheses. |
+
+`Calculator` catches `CalcError` and maps the code to a short user-facing
+message. Unexpected failures use a generic “Unable to calculate” message. The
+`Display` result is an `aria-live="polite"` output, so results and errors are
+announced without moving focus.
+
+## UI layer
+
+### `App`
+
+`App` is the composition root. It owns the settings hook, applies the theme,
+renders the page chrome and header `ThemeControl`, mounts `Calculator`, and
+keeps the PWA update prompt available globally.
+
+### `Calculator`
+
+`Calculator` is the stateful UI controller. React state holds the current
+expression parts and entry, display/error flags, standard/scientific mode,
+open panel, memory value, recalled history expression, and temporary
+keyboard-highlight state.
+
+It:
+
+- converts keypad and supported global key events into `CalculatorAction`
+  values;
+- calls `compute()` with the current angle mode and an engine precision of 12;
+- applies the display-only decimal-place and grouping preferences;
+- implements calculator percent semantics;
+- transforms scientific-key actions into engine expressions;
+- implements session-only memory operations;
+- appends successful evaluations to history;
+- recalls a history expression for re-evaluation; and
+- validates pasted expressions through `sanitizePastedExpression()` before
+  calling the engine.
+
+Each direct keypad entry is limited to 16 digits. Paste input is separately
+limited to 256 characters and 256 tokens and accepts a deliberately narrower
+arithmetic-only grammar.
+
+### Presentational components
+
+- `Keypad` defines the standard buttons, accessible names, and advertised
+  `aria-keyshortcuts`.
+- `ScientificKeypad` exposes sin/cos/tan, inverse trig, ln/log10, square root,
+  square, power, reciprocal, factorial, π, and e.
+- `Display` renders the current mode, angle mode, memory indicator,
+  expression, result, and accessible status/error output.
+- `HistoryPanel` is a modal dialog-style side panel for reuse, per-entry
+  removal, and clearing.
+- `SettingsPanel` edits grouping, decimal places, angle mode, theme, and
+  private mode.
+- `PwaUpdatePrompt` offers user-controlled reload or dismissal when a waiting
+  service worker reports an update.
+
+`CalculatorButton` is the shared accessible button primitive. Native tab order
+and button behavior provide access to controls that do not have global
+calculator shortcuts.
+
+## State and persistence
+
+No external state library is used. Settings and history are isolated in React
+hooks; transient calculator state remains inside `Calculator`.
+
+### Settings schema
+
+`useCalculatorSettings()` reads and writes the `opencalc.settings` key:
+
+```json
+{
+  "version": 1,
+  "settings": {
+    "digitGrouping": true,
+    "decimalPlaces": 10,
+    "angleMode": "DEG",
+    "theme": "system",
+    "privateMode": false
+  }
 }
 ```
 
-### 2.5 DEG / RAD handling
+These values are also the defaults. `decimalPlaces` is validated as an integer
+from 0 through 12; the other fields are validated against their exact boolean
+or string unions.
 
-- Angle mode is conveyed exclusively via `ctx.angleMode` (`'DEG' | 'RAD'`).
-- `scientific.ts` interprets angle arguments according to `ctx.angleMode` and
-  normalizes to radians internally for all trig math. Trig inverse results are
-  converted back to the active mode before returning.
-- Affected functions: `sin`, `cos`, `tan`, `asin`, `acos`, `atan` (and any
-  derived helpers). Hyperbolic functions are dimensionless and ignore angle mode.
-- The UI adapter MUST reset `angleMode` from the Settings store on every
-  evaluation; the engine MUST NOT cache angle mode.
+### History schema
 
-### 2.6 Decimal strategy
+`useCalculatorHistory()` reads and writes `opencalc.history`:
 
-- `decimal.ts` provides a single `Decimal` interface plus a config-driven shim,
-  so the backing implementation can be swapped (e.g. a BigInt-rational fallback
-  for offline SAM-scale builds) without touching callers.
-- Floating-point `number` MUST NOT be used for final results; it is permitted
-  only transiently inside a shim that immediately promotes to `Decimal`.
-- Precision honors `ctx.precision` for rounding on `format` only;
-  intermediate calculations keep full available precision to avoid premature
-  rounding error.
+```json
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "timestamp-sequence",
+      "expression": "2 + 3",
+      "result": "5",
+      "createdAt": 1780000000000
+    }
+  ]
+}
+```
 
----
+History is newest-first and capped at 50 entries. The current schema stores the
+expression, the engine-formatted result, and a timestamp; it does **not** store
+an angle-mode or precision snapshot. Reusing an entry stages its expression,
+and pressing equals evaluates it under the current angle mode.
 
-## 3. UI Component Responsibilities (engine boundaries only)
+### Versioning and recovery
 
-| Component     | Engine interaction                                                                 |
-| ------------- | ---------------------------------------------------------------------------------- |
-| `Display`     | Calls `tokenize` for live tokenization previews; renders `format(result, opts)`.   |
-| Result path   | `tokenize → parse → evaluate(_, ctx) → format(_, opts)`. Wrapped by the state adapter. |
-| Error path    | The adapter catches `CalcError`, maps `code` -> localized message, pushes to an `aria-live` region. |
-| `History`     | Stores expression + canonical result + `ctx` snapshot; replayable offline.          |
-| `Settings`    | Owns `angleMode`, `precision`, theme; writes into the store consumed by the adapter. |
-| `PWA`         | No engine interaction; ensures the engine bundle is cached offline.                |
+Both payloads use schema version `1`. There is currently no migration path:
+an unknown version, invalid JSON, wrong field type, out-of-range setting, or
+malformed history entry causes that storage key to be removed and safe defaults
+to be used.
 
----
+All storage reads and writes are guarded. If the API exists but throws (for
+example, because it is blocked or over quota), settings and history continue
+to work in React memory for the current session. Enabling private mode removes
+the history key and clears the loaded entry list; new calculations are not
+recorded until private mode is disabled.
 
-## 4. Integration Order
+The memory register, standard/scientific mode, open panel, and in-progress
+calculation are never persisted.
 
-The build must proceed bottom-up so each layer has stable contracts beneath it
-before dependents are written. Phases map directly to task IDs in
-`openagent-task-graph.json`.
+## PWA and service-worker strategy
 
-1. **Phase 0 — Engine core (calc-task-001).**
-   Implement `types.ts`, `decimal.ts`, `tokenizer.ts`, `parser.ts`,
-   `evaluator.ts`. No scientific functions yet; ship the four typed-syntax/error
-   paths (`DivisionByZero`, `DivisionByZero`, `Overflow`, `SyntaxError`,
-   `MismatchedParens`). Unit-test the pipeline `tokenize → parse → evaluate`.
+`vite-plugin-pwa` generates the Web App Manifest and a Workbox service worker
+during `npm run build`.
 
-2. **Phase 1 — Scientific + DEG/RAD (calc-task-002).**
-   Implement `scientific.ts` plus `InvalidFactorial` and `DomainError`. Add
-   factorial validation and angle-mode normalization. Depends on Phase 0.
+- The manifest uses the app name and short name, standalone display mode,
+  same-directory start URL and scope, theme/background colors, 192 px and
+  512 px icons, and a maskable 512 px icon.
+- Workbox precaches generated `html`, `js`, `css`, `png`, `svg`, and
+  `webmanifest` files. `index.html` is the navigation fallback.
+- `cacheId` is `opencalc-studio-v1`, and outdated generated caches are cleaned
+  up. No runtime cache routes, background sync, or push handling are defined.
+- The service worker is registered only in a production build and only when
+  `navigator.serviceWorker` exists. Registration is immediate.
+- Update handling uses `registerType: "prompt"`. A waiting update is announced
+  through the small subscription module in `src/pwa.ts`; the UI reloads only
+  after the user selects **Reload**, so a calculation is not automatically
+  interrupted.
+- App code performs no backend requests. Once the generated app shell is
+  precached, the engine, UI, icons, and navigation fallback are available
+  offline.
 
-3. **Phase 2 — Standard UI (calc-task-003).**
-   Build `Keypad`, `Display`, `Shell`, the state adapter, and the
-   `CalcError` -> message mapping with accessible error surfacing. Depends on
-   Phase 0 (uses core engine functions and basic errors).
+Installation and service-worker operation require normal platform support and
+a secure context. Development mode intentionally does not register the worker.
 
-4. **Phase 3 — History + Settings + PWA (calc-task-004).**
-   Wire `History` (replayable), `Settings` (angle mode / precision / theme /
-   privacy), and `pwa/` (manifest, service worker, offline cache of the engine
-   bundle). Depends on Phases 1 and 2 (uses scientific functions, angle-mode UI).
+## Testing and build boundaries
 
-5. **Phase 4 — QA tests (calc-task-005).**
-   Vitest unit tests for the engine pipeline, angle-mode parity, error matrix,
-   and a component-level RTL suite for UI / accessibility. Depends on Phases 1–3.
+- Vitest runs the engine in Node and React components in jsdom.
+- Playwright builds and serves the production app and runs the same scenarios
+  in Chromium, Firefox, and WebKit.
+- The production build runs TypeScript project checking before Vite bundling.
+- The calculation engine is testable without DOM or React setup.
 
-6. **Phase 5 — Security review (calc-task-006).**
-   Threat-model the engine (input limits, `maxNodeDepth`, decimal-stack
-   overflow, no `eval`), PWA caching scope, and credential/telemetry-free
-   offline guarantees. Depends on Phase 4.
-
-7. **Phase 6 — Docs (calc-task-007).**
-   User guide, keyboard reference, error-message reference, accessibility notes,
-   and contribution/engine-extension guide. Depends on Phases 1–3.
-
-8. **Phase 7 — Integration review (calc-task-008).**
-   End-to-end acceptance matrix walkthrough, cross-phase contract verification,
-   and sign-off against `acceptance-criteria.md`. Depends on Phases 1–6.
-
-9. **Phase 8 — Release hardening (calc-task-009).**
-   Strict-mode + `tsc --noEmit` cleanliness, bundle-size budget, Lighthouse /
-   a11y audit re-run against the acceptance matrix, and changelog/release
-   notes. Final gate. Depends on Phase 7.
-
----
-
-## 5. Cross-cutting invariants (enforced in review)
-
-- No `eval`, no `Function` constructor, no dynamic `import` of user input.
-- Every public engine function is pure; none reads browser globals.
-- Every `CalcError` has a stable `code` string used as the i18n key.
-- `tokenize -> parse -> evaluate -> format` is the only sanctioned execution
-  pipeline; shortcuts that skip `parse` are forbidden.
-- Angle mode and precision flow only through `EvalContext`; no hidden globals.
-
----
-
-## 6. Interfaces between agents
-
-| Producing agent   | Consuming agent   | Artifact                                                                 |
-| ----------------- | ------------------ | ------------------------------------------------------------------------ |
-| agy-frontend (engine) | agy-frontend (UI)  | `src/calculator/index.ts` public exports + `CalcError.code` set          |
-| agy-frontend      | agy-qa             | Vitest harness + example fixtures                                        |
-| agy-frontend      | agy-security       | Engine surface, PWA scope, dependency manifest                           |
-| agy-frontend      | agy-docs           | Public function signatures, error codes, keyboard bindings               |
-| agy-qa            | agy-security        | Failing/marginal test matrix for risk areas                              |
-| All               | GLM Orchestrator   | Final acceptance-matrix walkthrough (calc-task-008)                      |
+The original task planning and integration history remain available in
+`openagent-task-graph.json` and `openagent-build-manifest.json`. The latter
+records that all product code was authored by OpenAgent agent runs.
