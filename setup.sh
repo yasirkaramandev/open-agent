@@ -109,9 +109,59 @@ say "[2/6] Installing a managed Python 3.12 (isolated; your system Python is unt
            "Check your network / proxy. This does not modify your system Python."
 
 # --------------------------------------------------------------------------- 3. OpenAgent tool
-say "[3/6] Installing OpenAgent (runtime deps only — no dev tools; your data is preserved)"
-"$UV" tool install --force --python 3.12 "$REPO_ROOT" \
-    || die "install-openagent" "uv tool install failed for $REPO_ROOT" \
+# By default OpenAgent installs an *exact official commit* straight from the remote, so the binary's
+# provenance is a pinned VCS commit and `openagent update` is fully checkout-independent afterwards
+# (no clean `main` checkout is ever required to update). Set OPENAGENT_SETUP_LOCAL=1, or pass
+# --local-development, to install from this working tree for development instead (spec §20).
+OFFICIAL_REMOTE="https://github.com/yasirkaramandev/openagent.git"
+LOCAL_DEV=0
+case "${1:-}" in --local-development) LOCAL_DEV=1 ;; esac
+[ "${OPENAGENT_SETUP_LOCAL:-0}" = "1" ] && LOCAL_DEV=1
+
+# Infer the update channel from the source version: a prerelease tracks the candidate channel, a
+# final release tracks stable. The value is a valid OpenAgentUpdateChannel; the install *source*
+# (official-github-vcs vs dev-local) is recorded separately.
+INSTALL_CHANNEL="stable"
+case "$EXPECTED_VERSION" in
+    *rc*|*a[0-9]*|*b[0-9]*|*dev*|*.dev*) INSTALL_CHANNEL="candidate" ;;
+esac
+
+if [ "$LOCAL_DEV" = "1" ]; then
+    say "[3/6] Installing OpenAgent from this checkout (local-development mode)"
+    INSTALL_SOURCE="$REPO_ROOT"
+    INSTALL_SOURCE_KIND="dev-local"
+    INSTALL_COMMIT=""
+    if have git && git -C "$REPO_ROOT" rev-parse HEAD >/dev/null 2>&1; then
+        INSTALL_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
+    fi
+else
+    have git \
+        || die "install-openagent" "git is required for an official install" \
+               "Install git, or set OPENAGENT_SETUP_LOCAL=1 to install from this checkout."
+    git -C "$REPO_ROOT" rev-parse HEAD >/dev/null 2>&1 \
+        || die "install-openagent" "this directory is not a git checkout" \
+               "Set OPENAGENT_SETUP_LOCAL=1 to install from this directory instead."
+    INSTALL_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+    # Fail closed unless this exact commit is reachable from the official repository. FETCH_HEAD is
+    # transient, so this verification never writes a persistent ref into the user's checkout.
+    reachable=0
+    for ref in main release-candidate; do
+        if git -C "$REPO_ROOT" fetch -q "$OFFICIAL_REMOTE" "$ref" 2>/dev/null \
+           && git -C "$REPO_ROOT" merge-base --is-ancestor "$INSTALL_COMMIT" FETCH_HEAD 2>/dev/null; then
+            reachable=1; break
+        fi
+    done
+    [ "$reachable" = "1" ] \
+        || die "install-openagent" \
+               "commit $INSTALL_COMMIT is not available from the official repository" \
+               "Push it to an official branch first, or set OPENAGENT_SETUP_LOCAL=1 for a local install."
+    say "[3/6] Installing OpenAgent from official commit ${INSTALL_COMMIT} (${INSTALL_CHANNEL} channel)"
+    INSTALL_SOURCE="git+${OFFICIAL_REMOTE}@${INSTALL_COMMIT}"
+    INSTALL_SOURCE_KIND="official-github-vcs"
+fi
+
+"$UV" tool install --force --python 3.12 "$INSTALL_SOURCE" \
+    || die "install-openagent" "uv tool install failed for $INSTALL_SOURCE" \
            "Re-run setup.sh; if it persists, check the output above for the failing dependency."
 
 TOOL_BIN="$("$UV" tool dir --bin 2>/dev/null)" \
@@ -120,6 +170,40 @@ OPENAGENT_BIN="$TOOL_BIN/openagent"
 [ -x "$OPENAGENT_BIN" ] \
     || die "install-openagent" "openagent executable missing at $OPENAGENT_BIN after install" \
            "Re-run setup.sh; the tool install may have been interrupted."
+
+# Persist install provenance (spec §8, §20.1) so `openagent update` is channel-aware from the first
+# run. Written atomically at 0600; never contains a secret. A git+VCS install also records the same
+# commit in its own direct_url.json, so this file is corroborating, not the sole source of truth.
+OA_HOME="${OPENAGENT_HOME:-$HOME/.openagent}"
+if mkdir -p "$OA_HOME" 2>/dev/null; then
+    META="$OA_HOME/install.json"
+    META_TMP="$OA_HOME/.install.json.$$"
+    CHANNEL_REF="null"
+    [ "$INSTALL_CHANNEL" = "candidate" ] && CHANNEL_REF='"release-candidate"'
+    COMMIT_JSON="null"
+    [ -n "$INSTALL_COMMIT" ] && COMMIT_JSON="\"$INSTALL_COMMIT\""
+    NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '')"
+    {
+        printf '{\n'
+        printf '  "schema_version": 1,\n'
+        printf '  "manager": "uv-tool",\n'
+        printf '  "source": "%s",\n' "$INSTALL_SOURCE_KIND"
+        printf '  "repository": "yasirkaramandev/openagent",\n'
+        printf '  "channel": "%s",\n' "$INSTALL_CHANNEL"
+        printf '  "channel_ref": %s,\n' "$CHANNEL_REF"
+        printf '  "installed_version": "%s",\n' "$EXPECTED_VERSION"
+        printf '  "installed_commit": %s,\n' "$COMMIT_JSON"
+        printf '  "last_accepted_version": "%s",\n' "$EXPECTED_VERSION"
+        printf '  "last_accepted_commit": %s,\n' "$COMMIT_JSON"
+        printf '  "python": "3.12",\n'
+        printf '  "updated_at": "%s"\n' "$NOW"
+        printf '}\n'
+    } > "$META_TMP" 2>/dev/null \
+        && chmod 600 "$META_TMP" 2>/dev/null \
+        && mv -f "$META_TMP" "$META" 2>/dev/null \
+        && say "      recorded install provenance in $META" \
+        || { rm -f "$META_TMP" 2>/dev/null; warn "could not record install provenance (non-fatal)"; }
+fi
 
 # --------------------------------------------------------------------------- 4. PATH
 add_path_to_profile() {

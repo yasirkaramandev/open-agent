@@ -90,10 +90,45 @@ try {
         Fail "install-python" "uv could not install managed Python 3.12" "Check network/proxy access, then re-run setup.ps1."
     }
 
-    Write-Step "[3/6] Installing or upgrading OpenAgent in an isolated uv tool environment"
-    & $Uv tool install --force --python 3.12 $RepoRoot
+    # By default install an exact official commit from the remote so the binary's provenance is a
+    # pinned VCS commit and `openagent update` is checkout-independent afterwards. Set
+    # OPENAGENT_SETUP_LOCAL=1 to install from this working tree for development instead (spec §20).
+    $OfficialRemote = "https://github.com/yasirkaramandev/openagent.git"
+    $LocalDev = ($env:OPENAGENT_SETUP_LOCAL -eq "1")
+    $InstallChannel = if ($ExpectedVersion -match "(rc|a\d|b\d|dev)") { "candidate" } else { "stable" }
+    $InstallCommit = ""
+    if ($LocalDev) {
+        Write-Step "[3/6] Installing OpenAgent from this checkout (local-development mode)"
+        $InstallSource = $RepoRoot
+        $InstallSourceKind = "dev-local"
+        try { $InstallCommit = (& git -C $RepoRoot rev-parse HEAD 2>$null).Trim() } catch { $InstallCommit = "" }
+    } else {
+        if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+            Fail "install-openagent" "git is required for an official install" "Install git, or set OPENAGENT_SETUP_LOCAL=1 to install from this checkout."
+        }
+        $InstallCommit = (& git -C $RepoRoot rev-parse HEAD 2>$null)
+        if (-not $InstallCommit) {
+            Fail "install-openagent" "this directory is not a git checkout" "Set OPENAGENT_SETUP_LOCAL=1 to install from this directory instead."
+        }
+        $InstallCommit = $InstallCommit.Trim()
+        $reachable = $false
+        foreach ($ref in @("main", "release-candidate")) {
+            & git -C $RepoRoot fetch -q $OfficialRemote $ref 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                & git -C $RepoRoot merge-base --is-ancestor $InstallCommit FETCH_HEAD 2>$null
+                if ($LASTEXITCODE -eq 0) { $reachable = $true; break }
+            }
+        }
+        if (-not $reachable) {
+            Fail "install-openagent" "commit $InstallCommit is not available from the official repository" "Push it to an official branch first, or set OPENAGENT_SETUP_LOCAL=1 for a local install."
+        }
+        Write-Step "[3/6] Installing OpenAgent from official commit $InstallCommit ($InstallChannel channel)"
+        $InstallSource = "git+$OfficialRemote@$InstallCommit"
+        $InstallSourceKind = "official-github-vcs"
+    }
+    & $Uv tool install --force --python 3.12 $InstallSource
     if ($LASTEXITCODE -ne 0) {
-        Fail "install-openagent" "uv tool install failed for $RepoRoot" "Check the dependency error above, then re-run setup.ps1."
+        Fail "install-openagent" "uv tool install failed for $InstallSource" "Check the dependency error above, then re-run setup.ps1."
     }
     $ToolBin = (& $Uv tool dir --bin | Select-Object -First 1).Trim()
     if (-not $ToolBin) {
@@ -102,6 +137,31 @@ try {
     $OpenAgent = Join-Path $ToolBin "openagent.exe"
     if (-not (Test-Path -LiteralPath $OpenAgent -PathType Leaf)) {
         Fail "install-openagent" "openagent.exe is missing from $ToolBin" "The tool install may have been interrupted; re-run setup.ps1."
+    }
+
+    # Persist install provenance (spec §8, §20.1) so `openagent update` is channel-aware immediately.
+    try {
+        $OaHome = if ($env:OPENAGENT_HOME) { $env:OPENAGENT_HOME } else { Join-Path $HOME ".openagent" }
+        New-Item -ItemType Directory -Force -Path $OaHome | Out-Null
+        $meta = [ordered]@{
+            schema_version        = 1
+            manager               = "uv-tool"
+            source                = $InstallSourceKind
+            repository            = "yasirkaramandev/openagent"
+            channel               = $InstallChannel
+            channel_ref           = if ($InstallChannel -eq "candidate") { "release-candidate" } else { $null }
+            installed_version     = $ExpectedVersion
+            installed_commit      = if ($InstallCommit) { $InstallCommit } else { $null }
+            last_accepted_version = $ExpectedVersion
+            last_accepted_commit  = if ($InstallCommit) { $InstallCommit } else { $null }
+            python                = "3.12"
+            updated_at            = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
+        }
+        $metaPath = Join-Path $OaHome "install.json"
+        ($meta | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath $metaPath -Encoding utf8
+        Write-Step "      recorded install provenance in $metaPath"
+    } catch {
+        Write-Warning "could not record install provenance (non-fatal)"
     }
 
     Write-Step "[4/6] Persisting the tool directory on the user PATH"
