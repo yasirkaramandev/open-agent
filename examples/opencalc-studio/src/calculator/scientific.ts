@@ -51,13 +51,24 @@ export interface ScientificFn {
  * Individual implementations.
  * ------------------------------------------------------------------ */
 
-function sin([x]: number[], ctx: { angleMode: AngleMode }): number {
+function unaryArg(args: number[], fnName: string): number {
+  const x = args[0];
+  if (x === undefined) {
+    throw new DomainError(`${fnName} requires one numeric argument`);
+  }
+  return x;
+}
+
+function sin(args: number[], ctx: { angleMode: AngleMode }): number {
+  const x = unaryArg(args, 'sin');
   return Math.sin(toRadians(x, ctx.angleMode, 'sin'));
 }
-function cos([x]: number[], ctx: { angleMode: AngleMode }): number {
+function cos(args: number[], ctx: { angleMode: AngleMode }): number {
+  const x = unaryArg(args, 'cos');
   return Math.cos(toRadians(x, ctx.angleMode, 'cos'));
 }
-function tan([x]: number[], ctx: { angleMode: AngleMode }): number {
+function tan(args: number[], ctx: { angleMode: AngleMode }): number {
+  const x = unaryArg(args, 'tan');
   // tan(90deg) / tan(pi/2) is an asymptote; detect and fail closed.
   const r = toRadians(x, ctx.angleMode, 'tan');
   if (Math.abs(Math.cos(r)) < 1e-15) {
@@ -66,47 +77,56 @@ function tan([x]: number[], ctx: { angleMode: AngleMode }): number {
   return Math.tan(r);
 }
 
-function asin([x]: number[], ctx: { angleMode: AngleMode }): number {
+function asin(args: number[], ctx: { angleMode: AngleMode }): number {
+  const x = unaryArg(args, 'asin');
   if (x < -1 || x > 1) {
     throw new DomainError(`asin domain is [-1, 1]; got ${x}`);
   }
   return fromRadians(Math.asin(x), ctx.angleMode);
 }
-function acos([x]: number[], ctx: { angleMode: AngleMode }): number {
+function acos(args: number[], ctx: { angleMode: AngleMode }): number {
+  const x = unaryArg(args, 'acos');
   if (x < -1 || x > 1) {
     throw new DomainError(`acos domain is [-1, 1]; got ${x}`);
   }
   return fromRadians(Math.acos(x), ctx.angleMode);
 }
-function atan([x]: number[], ctx: { angleMode: AngleMode }): number {
+function atan(args: number[], ctx: { angleMode: AngleMode }): number {
+  const x = unaryArg(args, 'atan');
   return fromRadians(Math.atan(x), ctx.angleMode);
 }
 
 /** Hyperbolic functions are dimensionless — angle mode ignored. */
-function sinh([x]: number[]): number {
+function sinh(args: number[]): number {
+  const x = unaryArg(args, 'sinh');
   return Math.sinh(x);
 }
-function cosh([x]: number[]): number {
+function cosh(args: number[]): number {
+  const x = unaryArg(args, 'cosh');
   return Math.cosh(x);
 }
-function tanh([x]: number[]): number {
+function tanh(args: number[]): number {
+  const x = unaryArg(args, 'tanh');
   return Math.tanh(x);
 }
 
 /** Base-10 logarithm; domain (0, +inf). */
-function log10([x]: number[]): number {
+function log10(args: number[]): number {
+  const x = unaryArg(args, 'log10');
   if (x <= 0) throw new DomainError(`log10 domain is (0, +inf); got ${x}`);
   return Math.log10(x);
 }
 
 /** Natural logarithm; domain (0, +inf). */
-function ln([x]: number[]): number {
+function ln(args: number[]): number {
+  const x = unaryArg(args, 'ln');
   if (x <= 0) throw new DomainError(`ln domain is (0, +inf); got ${x}`);
   return Math.log(x);
 }
 
 /** Square root; domain [0, +inf). */
-function sqrt([x]: number[]): number {
+function sqrt(args: number[]): number {
+  const x = unaryArg(args, 'sqrt');
   if (x < 0) throw new DomainError(`sqrt domain is [0, +inf); got ${x}`);
   const r = Math.sqrt(x);
   if (!Number.isFinite(r)) throw new Overflow('sqrt overflow');
@@ -114,7 +134,8 @@ function sqrt([x]: number[]): number {
 }
 
 /** Cube root; defined for all reals. */
-function cbrt([x]: number[]): number {
+function cbrt(args: number[]): number {
+  const x = unaryArg(args, 'cbrt');
   const r = Math.cbrt(x);
   if (!Number.isFinite(r)) throw new Overflow('cbrt overflow');
   return r;

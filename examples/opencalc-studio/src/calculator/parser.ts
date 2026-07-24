@@ -52,6 +52,9 @@ export function parse(tokens: Token[]): Node {
   const node = parser.parseExpression();
   const eof = parser.peek();
   if (eof.kind !== 'eof') {
+    if (eof.kind === 'rparen') {
+      throw new MismatchedParens('unbalanced ")"', eof.pos);
+    }
     throw new SyntaxError(`unexpected token "${eof.value}"`, eof.pos);
   }
   return node;
@@ -199,7 +202,7 @@ class Parser {
 
   /* ----------------------- lookahead helpers ------------------------ */
 
-  private peek(): Token {
+  peek(): Token {
     const t = this.tokens[this.i];
     if (t === undefined) {
       return { kind: 'eof', value: '', pos: -1 };

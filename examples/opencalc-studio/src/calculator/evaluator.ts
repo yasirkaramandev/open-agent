@@ -264,7 +264,7 @@ function applySep(
   if (/[eE]/.test(raw)) {
     return raw; // scientific form bypasses grouping
   }
-  let [intPart, fracPart = ''] = raw.split('.');
+  let [intPart = '', fracPart = ''] = raw.split('.');
   let sign = '';
   if (intPart.startsWith('-')) {
     sign = '-';

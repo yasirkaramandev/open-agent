@@ -46,13 +46,13 @@ export type CalcErrorCode =
   | 'MismatchedParens';
 
 /**
- * Abstract base for every engine failure. Carries a discriminating `code`
+ * Base class for every engine failure. Carries a discriminating `code`
  * plus an optional source position (`pos`) so the tokenizer/parser can
  * pinpoint the offending character. `kind` is an alias for `code` for
  * ergonomic `error.kind === '...'` checks.
  */
-export abstract class CalcError extends Error {
-  abstract readonly code: CalcErrorCode;
+export class CalcError extends Error {
+  readonly code: CalcErrorCode = 'SyntaxError';
   /** Alias for `code` — friendlier for callers (`err.kind`). */
   get kind(): CalcErrorCode {
     return this.code;
