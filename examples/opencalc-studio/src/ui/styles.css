@@ -840,6 +840,53 @@ button {
   text-transform: uppercase;
 }
 
+.pwa-update {
+  position: fixed;
+  z-index: 30;
+  right: clamp(0.75rem, 2.2vw, 1.5rem);
+  bottom: clamp(0.75rem, 2.2vw, 1.5rem);
+  display: flex;
+  gap: 0.7rem;
+  align-items: center;
+  max-width: calc(100vw - 1.5rem);
+  padding: 0.55rem 0.6rem 0.55rem 0.85rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 0.9rem;
+  color: var(--ink);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  font-size: 0.75rem;
+  font-weight: 680;
+  backdrop-filter: blur(1.4rem);
+}
+
+.pwa-update button {
+  min-height: 2.15rem;
+  border: 0;
+  border-radius: 0.65rem;
+  cursor: pointer;
+}
+
+.pwa-update__reload {
+  padding: 0 0.85rem;
+  color: var(--accent-ink);
+  background: var(--accent);
+  font-weight: 760;
+}
+
+.pwa-update__dismiss {
+  width: 2.15rem;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  font-size: 1.1rem;
+}
+
+.pwa-update button:focus-visible {
+  outline: 0.16rem solid var(--focus);
+  outline-offset: 0.12rem;
+}
+
 @media (max-width: 30rem) {
   .calculator-stage {
     align-items: center;

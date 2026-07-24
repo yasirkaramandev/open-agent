@@ -1,4 +1,5 @@
 import { Calculator } from './ui/Calculator';
+import { PwaUpdatePrompt } from './ui/PwaUpdatePrompt';
 import { ThemeControl } from './ui/ThemeControl';
 import { useCalculatorSettings } from './ui/settings';
 import { useTheme } from './ui/useTheme';
@@ -38,6 +39,8 @@ export default function App() {
         <span aria-hidden="true">•</span>
         <span>Keyboard ready</span>
       </footer>
+
+      <PwaUpdatePrompt />
     </div>
   );
 }
