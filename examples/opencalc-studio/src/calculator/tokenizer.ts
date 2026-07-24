@@ -23,8 +23,19 @@ import { SyntaxError, type Token, type TokenKind } from './types';
 
 /** Identifier-like names mapped to either a function or a constant. */
 const FUNCTION_NAMES = new Set<string>([
-  'sin', 'cos', 'tan', 'asin', 'acos', 'atan',
-  'sinh', 'cosh', 'tanh', 'log10', 'ln', 'sqrt', 'cbrt',
+  'sin',
+  'cos',
+  'tan',
+  'asin',
+  'acos',
+  'atan',
+  'sinh',
+  'cosh',
+  'tanh',
+  'log10',
+  'ln',
+  'sqrt',
+  'cbrt',
 ]);
 
 const CONSTANT_NAMES = new Set<string>(['pi', 'e']);
@@ -63,7 +74,7 @@ export function tokenize(input: string): Token[] {
         }
       }
       const text = input.slice(start, i);
-      if (text === '.' ) {
+      if (text === '.') {
         throw new SyntaxError(`invalid number near pos ${pos}`, pos);
       }
       tokens.push(mk('number', text, start));
@@ -88,7 +99,14 @@ export function tokenize(input: string): Token[] {
     }
 
     // Operators.
-    if (ch === '+' || ch === '-' || ch === '*' || ch === '/' || ch === '%' || ch === '^') {
+    if (
+      ch === '+' ||
+      ch === '-' ||
+      ch === '*' ||
+      ch === '/' ||
+      ch === '%' ||
+      ch === '^'
+    ) {
       tokens.push(mk('operator', ch, pos));
       i += 1;
       continue;

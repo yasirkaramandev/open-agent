@@ -6,23 +6,23 @@ shortcut metadata shown on keypad buttons is defined in `src/ui/Keypad.tsx`.
 
 ## Calculator bindings
 
-| Key | Action | Notes |
-| --- | --- | --- |
-| `0`–`9` | Enter a digit | Each direct keypad entry is limited to 16 digits. |
-| `.` | Enter a decimal point | A second decimal point in the current entry is ignored. |
-| `,` | Enter a decimal point | Keyboard alias for `.`; the display still uses a dot. |
-| `+` | Add | |
-| `-` | Subtract | |
-| `*` | Multiply | |
-| `x` or `X` | Multiply | Case-insensitive alias for `*`. |
-| `/` | Divide | |
-| `^` | Raise to a power | Opens the next operand in the same way as the scientific `xʸ` button. |
-| `%` | Percent | For `+` and `-`, percentage is based on the expression to the left; otherwise the current entry is divided by 100. |
-| `Enter` | Equals | Evaluates the current or recalled expression. |
-| `=` | Equals | Alias for `Enter`. |
-| `Escape` | Clear all | If History or Settings is open, closes that panel instead and leaves the calculation intact. |
-| `Delete` | Clear entry | Resets only the current entry to zero. |
-| `Backspace` | Backspace | Deletes the last digit; after an operator, steps back to the preceding entry; after a completed result, clears the calculation. |
+| Key         | Action                | Notes                                                                                                                           |
+| ----------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `0`–`9`     | Enter a digit         | Each direct keypad entry is limited to 16 digits.                                                                               |
+| `.`         | Enter a decimal point | A second decimal point in the current entry is ignored.                                                                         |
+| `,`         | Enter a decimal point | Keyboard alias for `.`; the display still uses a dot.                                                                           |
+| `+`         | Add                   |                                                                                                                                 |
+| `-`         | Subtract              |                                                                                                                                 |
+| `*`         | Multiply              |                                                                                                                                 |
+| `x` or `X`  | Multiply              | Case-insensitive alias for `*`.                                                                                                 |
+| `/`         | Divide                |                                                                                                                                 |
+| `^`         | Raise to a power      | Opens the next operand in the same way as the scientific `xʸ` button.                                                           |
+| `%`         | Percent               | For `+` and `-`, percentage is based on the expression to the left; otherwise the current entry is divided by 100.              |
+| `Enter`     | Equals                | Evaluates the current or recalled expression.                                                                                   |
+| `=`         | Equals                | Alias for `Enter`.                                                                                                              |
+| `Escape`    | Clear all             | If History or Settings is open, closes that panel instead and leaves the calculation intact.                                    |
+| `Delete`    | Clear entry           | Resets only the current entry to zero.                                                                                          |
+| `Backspace` | Backspace             | Deletes the last digit; after an operator, steps back to the preceding entry; after a completed result, clears the calculation. |
 
 The global handler briefly highlights the matching on-screen standard key.
 
@@ -34,11 +34,11 @@ input from interfering with settings fields and focused controls.
 
 Use normal browser navigation for the rest of the interface:
 
-| Key | Browser behavior in OpenCalc |
-| --- | --- |
-| `Tab` | Move to the next interactive control. |
-| `Shift+Tab` | Move to the previous interactive control. |
-| `Enter` or `Space` | Activate the currently focused button. |
+| Key                | Browser behavior in OpenCalc              |
+| ------------------ | ----------------------------------------- |
+| `Tab`              | Move to the next interactive control.     |
+| `Shift+Tab`        | Move to the previous interactive control. |
+| `Enter` or `Space` | Activate the currently focused button.    |
 
 `Control`, `Command`, and `Alt` key combinations are ignored by the calculator
 `keydown` handler. Shifted symbols such as `+`, `*`, `^`, and `%` still work

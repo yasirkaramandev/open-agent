@@ -159,7 +159,10 @@ class Parser {
         const nameTok = this.advance();
         const lp = this.peek();
         if (lp.kind !== 'lparen') {
-          throw new SyntaxError(`expected '(' after function "${nameTok.value}"`, lp.pos);
+          throw new SyntaxError(
+            `expected '(' after function "${nameTok.value}"`,
+            lp.pos,
+          );
         }
         this.advance();
         const args: Node[] = [];

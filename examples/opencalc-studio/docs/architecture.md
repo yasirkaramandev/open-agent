@@ -50,15 +50,15 @@ tokens, system-theme media query, focus styling, and reduced-motion override.
 The engine lives in `src/calculator/` and exposes its public surface through
 `src/calculator/index.ts`.
 
-| Module | Current responsibility |
-| --- | --- |
-| `types.ts` | `EvalContext`, tokens, AST nodes, formatting options, and the typed `CalcError` hierarchy. |
-| `decimal.ts` | Internal sign/digits/scale decimal representation, integer-scaled arithmetic, number conversion, and factorial. |
-| `tokenizer.ts` | Converts source text to positioned tokens and rejects unsupported characters or identifiers. |
-| `parser.ts` | Builds an AST with precedence, right-associative powers, unary signs, postfix factorial, function calls, grouping, and implicit multiplication. |
-| `scientific.ts` | Registers scientific functions and constants and applies DEG/RAD conversion and domain checks. |
-| `evaluator.ts` | Recursively evaluates the AST, enforces maximum node depth, dispatches arithmetic/scientific operations, and formats values. |
-| `index.ts` | Re-exports the layers and provides the `compute()` convenience pipeline. |
+| Module          | Current responsibility                                                                                                                          |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`      | `EvalContext`, tokens, AST nodes, formatting options, and the typed `CalcError` hierarchy.                                                      |
+| `decimal.ts`    | Internal sign/digits/scale decimal representation, integer-scaled arithmetic, number conversion, and factorial.                                 |
+| `tokenizer.ts`  | Converts source text to positioned tokens and rejects unsupported characters or identifiers.                                                    |
+| `parser.ts`     | Builds an AST with precedence, right-associative powers, unary signs, postfix factorial, function calls, grouping, and implicit multiplication. |
+| `scientific.ts` | Registers scientific functions and constants and applies DEG/RAD conversion and domain checks.                                                  |
+| `evaluator.ts`  | Recursively evaluates the AST, enforces maximum node depth, dispatches arithmetic/scientific operations, and formats values.                    |
+| `index.ts`      | Re-exports the layers and provides the `compute()` convenience pipeline.                                                                        |
 
 ### Pipeline
 
@@ -116,14 +116,14 @@ numeric model and its boundaries.
 Every engine error extends `CalcError`, exposes a stable `code` (also available
 as `kind`), and may carry a zero-based source `pos`.
 
-| Code / class | Typical source |
-| --- | --- |
-| `DivisionByZero` | Division or modulo by zero, a negative power of zero, or a tangent asymptote. |
-| `DomainError` | Invalid square root/log/inverse-trig input or a negative base with a fractional exponent. |
-| `Overflow` | A non-finite result, factorial above 170, or the evaluation-depth guard. |
-| `SyntaxError` | Unsupported input, malformed grammar, unknown function/constant, or wrong function arity. |
-| `InvalidFactorial` | A negative or non-integer factorial operand. |
-| `MismatchedParens` | Missing or extra parentheses. |
+| Code / class       | Typical source                                                                            |
+| ------------------ | ----------------------------------------------------------------------------------------- |
+| `DivisionByZero`   | Division or modulo by zero, a negative power of zero, or a tangent asymptote.             |
+| `DomainError`      | Invalid square root/log/inverse-trig input or a negative base with a fractional exponent. |
+| `Overflow`         | A non-finite result, factorial above 170, or the evaluation-depth guard.                  |
+| `SyntaxError`      | Unsupported input, malformed grammar, unknown function/constant, or wrong function arity. |
+| `InvalidFactorial` | A negative or non-integer factorial operand.                                              |
+| `MismatchedParens` | Missing or extra parentheses.                                                             |
 
 `Calculator` catches `CalcError` and maps the code to a short user-facing
 message. Unexpected failures use a generic “Unable to calculate” message. The

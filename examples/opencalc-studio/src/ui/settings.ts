@@ -89,12 +89,9 @@ export function useCalculatorSettings() {
     }
   }, [settings]);
 
-  const updateSettings = useCallback(
-    (updates: Partial<CalculatorSettings>) => {
-      setSettings((current) => ({ ...current, ...updates }));
-    },
-    [],
-  );
+  const updateSettings = useCallback((updates: Partial<CalculatorSettings>) => {
+    setSettings((current) => ({ ...current, ...updates }));
+  }, []);
 
   return { settings, updateSettings };
 }

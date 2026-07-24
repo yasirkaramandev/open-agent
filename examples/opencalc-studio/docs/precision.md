@@ -139,14 +139,14 @@ reach the UI.
 
 The actual discriminants in `src/calculator/types.ts` are:
 
-| Code | Meaning | Example |
-| --- | --- | --- |
-| `DivisionByZero` | A division-like operation has a zero denominator or undefined asymptote. | `1 / 0` |
-| `DomainError` | The input is outside the mathematical domain. | `sqrt(-1)` |
-| `Overflow` | The result is non-finite, the factorial limit is exceeded, or the AST is too deep. | `10 ^ 9999` |
-| `SyntaxError` | The expression contains unsupported text or invalid grammar. | `2 +` |
-| `InvalidFactorial` | Factorial received a negative or non-integer operand. | `0.5!` |
-| `MismatchedParens` | An opening or closing parenthesis has no match. | `(2 + 3` |
+| Code               | Meaning                                                                            | Example     |
+| ------------------ | ---------------------------------------------------------------------------------- | ----------- |
+| `DivisionByZero`   | A division-like operation has a zero denominator or undefined asymptote.           | `1 / 0`     |
+| `DomainError`      | The input is outside the mathematical domain.                                      | `sqrt(-1)`  |
+| `Overflow`         | The result is non-finite, the factorial limit is exceeded, or the AST is too deep. | `10 ^ 9999` |
+| `SyntaxError`      | The expression contains unsupported text or invalid grammar.                       | `2 +`       |
+| `InvalidFactorial` | Factorial received a negative or non-integer operand.                              | `0.5!`      |
+| `MismatchedParens` | An opening or closing parenthesis has no match.                                    | `(2 + 3`    |
 
 The divide-by-zero code is named `DivisionByZero`—not `DivideByZero`. Every
 concrete error extends `CalcError`, exposes the code as both `error.code` and
@@ -154,11 +154,11 @@ concrete error extends `CalcError`, exposes the code as both `error.code` and
 
 The UI maps those codes to these messages:
 
-| Code | Display message |
-| --- | --- |
-| `DivisionByZero` | Cannot divide by zero |
-| `DomainError` | That value is outside the valid range |
-| `Overflow` | Result is too large |
-| `SyntaxError` | Check the expression |
+| Code               | Display message                         |
+| ------------------ | --------------------------------------- |
+| `DivisionByZero`   | Cannot divide by zero                   |
+| `DomainError`      | That value is outside the valid range   |
+| `Overflow`         | Result is too large                     |
+| `SyntaxError`      | Check the expression                    |
 | `InvalidFactorial` | Factorial needs a positive whole number |
-| `MismatchedParens` | Check the parentheses |
+| `MismatchedParens` | Check the parentheses                   |

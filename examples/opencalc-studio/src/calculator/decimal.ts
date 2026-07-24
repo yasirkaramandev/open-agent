@@ -60,7 +60,8 @@ const FACTORIAL_OVERFLOW_LIMIT = 170n;
 
 /** Parse a number/string into a canonical DecimalRep. Accepts 0.1, 42, .5, -3. */
 export function parseDecimal(input: number | string): DecimalRep {
-  const s = typeof input === 'number' ? numberToString(input) : String(input).trim();
+  const s =
+    typeof input === 'number' ? numberToString(input) : String(input).trim();
   if (s === '') throw new SyntaxError('empty number literal');
 
   let sign: 1 | -1 | 0 = 1;
@@ -110,19 +111,31 @@ export function numberToDecimal(n: number): DecimalRep {
 
 /* --------------------------- arithmetic ---------------------------- */
 
-export function decimalAdd(a: number | DecimalRep, b: number | DecimalRep): number {
+export function decimalAdd(
+  a: number | DecimalRep,
+  b: number | DecimalRep,
+): number {
   return decimalToNumber(add(toRep(a), toRep(b)));
 }
 
-export function decimalSubtract(a: number | DecimalRep, b: number | DecimalRep): number {
+export function decimalSubtract(
+  a: number | DecimalRep,
+  b: number | DecimalRep,
+): number {
   return decimalToNumber(subtract(toRep(a), toRep(b)));
 }
 
-export function decimalMultiply(a: number | DecimalRep, b: number | DecimalRep): number {
+export function decimalMultiply(
+  a: number | DecimalRep,
+  b: number | DecimalRep,
+): number {
   return decimalToNumber(multiply(toRep(a), toRep(b)));
 }
 
-export function decimalDivide(a: number | DecimalRep, b: number | DecimalRep): number {
+export function decimalDivide(
+  a: number | DecimalRep,
+  b: number | DecimalRep,
+): number {
   return decimalToNumber(divide(toRep(a), toRep(b)));
 }
 
@@ -166,7 +179,8 @@ export function divide(a: DecimalRep, b: DecimalRep): DecimalRep {
   // We want roughly DIV_PRECISION fractional digits in the result. Compute the
   // quotient of (a.digits * 10^(sa)) / b.digits where sa makes the result have
   // the desired scale: result = quotient / 10^finalScale.
-  const finalScale = a.scale < b.scale ? DIV_PRECISION : DIV_PRECISION + (a.scale - b.scale);
+  const finalScale =
+    a.scale < b.scale ? DIV_PRECISION : DIV_PRECISION + (a.scale - b.scale);
   const shift = finalScale - a.scale + b.scale; // >= 0 because finalScale large enough
   const shifted = a.digits * pow10(shift);
   const divisor = b.digits;
@@ -181,13 +195,17 @@ export function divide(a: DecimalRep, b: DecimalRep): DecimalRep {
 /** Factorial of a non-negative integer via bigint, with overflow guarding. */
 export function factorial(n: number): number {
   if (!Number.isInteger(n)) {
-    throw new InvalidFactorial(`factorial requires a non-negative integer, got ${n}`);
+    throw new InvalidFactorial(
+      `factorial requires a non-negative integer, got ${n}`,
+    );
   }
   if (n < 0) {
     throw new InvalidFactorial(`factorial of negative number: ${n}`);
   }
   if (BigInt(n) > FACTORIAL_OVERFLOW_LIMIT) {
-    throw new Overflow(`factorial overflow for ${n} (limit ${FACTORIAL_OVERFLOW_LIMIT})`);
+    throw new Overflow(
+      `factorial overflow for ${n} (limit ${FACTORIAL_OVERFLOW_LIMIT})`,
+    );
   }
   if (n <= 1) return 1;
   let acc = 1n;
@@ -213,7 +231,10 @@ function toRep(x: number | DecimalRep): DecimalRep {
 }
 
 /** Align two reps to a common scale, returning scaled bigint magnitudes. */
-function alignScale(a: DecimalRep, b: DecimalRep): {
+function alignScale(
+  a: DecimalRep,
+  b: DecimalRep,
+): {
   scale: number;
   da: bigint;
   db: bigint;
@@ -248,7 +269,11 @@ function trim(rep: DecimalRep): DecimalRep {
 }
 
 /** Build an exact decimal string for digits / 10^scale with `places` frac digits. */
-function digitsToScaledString(digits: bigint, scale: number, places: number): string {
+function digitsToScaledString(
+  digits: bigint,
+  scale: number,
+  places: number,
+): string {
   // Promote to `places` fractional digits: multiply by 10^(places - scale).
   let shifted = digits;
   if (scale < places) {

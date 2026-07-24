@@ -24,7 +24,10 @@ export function Display({
           {mode}
           {mode === 'SCI' ? ` / ${angleMode}` : ''}
           {hasMemory ? (
-            <span className="display__memory" aria-label="Memory contains a value">
+            <span
+              className="display__memory"
+              aria-label="Memory contains a value"
+            >
               M
             </span>
           ) : null}

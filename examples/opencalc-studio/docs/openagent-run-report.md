@@ -1,7 +1,7 @@
 # OpenCalc Studio — OpenAgent build run report
 
 **Operator-compiled provenance.** This report was compiled by the OpenAgent orchestration operator
-from real run records. Every *product* and *plan* file in this example was authored by an OpenAgent
+from real run records. Every _product_ and _plan_ file in this example was authored by an OpenAgent
 agent run (see the table); none was hand-written. The operator's role was limited to: creating the
 agent team, writing task prompts, launching runs, verifying outputs (running `vitest`), integrating
 agent-authored files, and recording provenance.
@@ -17,16 +17,16 @@ agent-authored files, and recording provenance.
 
 ## Runs
 
-| Run ID | Agent | Status | Outcome |
-|---|---|---|---|
-| `run_3bc9d9d80d23` | glm-orchestrator | completed | Plan (task graph + architecture + acceptance) — integrated |
-| `run_e38ed3f90b82` | agy-frontend | failed (429 after deliverables) | Calc engine + scaffold + 44-test suite — salvaged & integrated; **43/44 vitest pass** |
-| `run_af50a11af338` | agy-frontend | failed (429) | parser fix — blocked by quota |
-| `run_7b918783984c` | agy-frontend | failed (429) | parser fix retry — blocked by quota |
-| `run_6be865059cc0` | glm-orchestrator | completed-empty | premature text-only turn ended the run before writing files |
-| `run_29bcb1abfc89` | glm-orchestrator | failed | `write_file` content passed as object; stream disconnect |
-| `run_49c06bcf1152` | glm-orchestrator | failed | stream >120s (before the timeout was raised) |
-| `run_28b3ab86d62e` | glm-orchestrator | failed | stream >120s (before the timeout was raised) |
+| Run ID             | Agent            | Status                          | Outcome                                                                               |
+| ------------------ | ---------------- | ------------------------------- | ------------------------------------------------------------------------------------- |
+| `run_3bc9d9d80d23` | glm-orchestrator | completed                       | Plan (task graph + architecture + acceptance) — integrated                            |
+| `run_e38ed3f90b82` | agy-frontend     | failed (429 after deliverables) | Calc engine + scaffold + 44-test suite — salvaged & integrated; **43/44 vitest pass** |
+| `run_af50a11af338` | agy-frontend     | failed (429)                    | parser fix — blocked by quota                                                         |
+| `run_7b918783984c` | agy-frontend     | failed (429)                    | parser fix retry — blocked by quota                                                   |
+| `run_6be865059cc0` | glm-orchestrator | completed-empty                 | premature text-only turn ended the run before writing files                           |
+| `run_29bcb1abfc89` | glm-orchestrator | failed                          | `write_file` content passed as object; stream disconnect                              |
+| `run_49c06bcf1152` | glm-orchestrator | failed                          | stream >120s (before the timeout was raised)                                          |
+| `run_28b3ab86d62e` | glm-orchestrator | failed                          | stream >120s (before the timeout was raised)                                          |
 
 ## What was delivered (agent-authored)
 
