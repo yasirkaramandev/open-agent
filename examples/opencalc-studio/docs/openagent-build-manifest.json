@@ -105,6 +105,36 @@
       "provider_note": "codex Sol agent (gpt-5.6-sol) after codex CLI upgrade; wired to existing engine in src/calculator/ (no math reimplemented).",
       "reviewed_by": ["operator (diff-scope review + npm test/typecheck/build + live browser functional + a11y check)"],
       "status": "accepted"
+    },
+    {
+      "task_id": "calc-task-004",
+      "title": "scientific mode + history + memory + settings",
+      "agent": "Sol (codex-cli, gpt-5.6-sol)",
+      "openagent_run_id": "run_7d13fdffadd2",
+      "run_status": "completed",
+      "base_commit": "a452131fb9a64765bbb008f2fc9a599b10922975",
+      "result_commit": "57b8742b0a34f6d224ef8b1ab625b384d3f2963b",
+      "integration_commit": "57b8742b0a34f6d224ef8b1ab625b384d3f2963b (fast-forward)",
+      "prompt_artifact": ".openagent/runs/run_7d13fdffadd2/request.json",
+      "output_artifact": ".openagent/runs/run_7d13fdffadd2/output.md",
+      "files_changed": [
+        "examples/opencalc-studio/src/App.tsx",
+        "examples/opencalc-studio/src/ui/Calculator.tsx",
+        "examples/opencalc-studio/src/ui/Display.tsx",
+        "examples/opencalc-studio/src/ui/HistoryPanel.tsx",
+        "examples/opencalc-studio/src/ui/Keypad.tsx",
+        "examples/opencalc-studio/src/ui/ScientificKeypad.tsx",
+        "examples/opencalc-studio/src/ui/SettingsPanel.tsx",
+        "examples/opencalc-studio/src/ui/ThemeControl.tsx",
+        "examples/opencalc-studio/src/ui/history.ts",
+        "examples/opencalc-studio/src/ui/settings.ts",
+        "examples/opencalc-studio/src/ui/styles.css",
+        "examples/opencalc-studio/src/ui/useTheme.ts"
+      ],
+      "verification": "operator ran (unmodified): npm test -> 44/44; npm run typecheck -> clean; npm run build -> success. LIVE browser check: STD/SCI toggle works; SCI mode shows DEG/RAD toggle + scientific grid (sin/cos/tan/asin/acos/atan/ln/log/sqrt/x^2/x^y/1/x/x!/pi/e); memory row MC/MR/M+/M-/MS present with aria-labels; History button ('Open history, N entries') and Settings gear present; header reflects settings (decimal places).",
+      "provider_note": "codex Sol agent (gpt-5.6-sol); wired to existing engine scientific.ts; no math reimplemented.",
+      "reviewed_by": ["operator (diff-scope review + npm test/typecheck/build + live browser SCI/history/settings + a11y check)"],
+      "status": "accepted"
     }
   ],
   "not_completed": {
